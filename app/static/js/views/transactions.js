@@ -1,4 +1,4 @@
-import { api, card, emptyState, eur, fmtDate, fmtMonthLong, h, link, num, pageHead, qs, toast } from "../ui.js";
+import { accountTag, api, card, emptyState, eur, fmtDate, fmtMonthLong, h, hasManyAccounts, link, num, pageHead, qs, toast } from "../ui.js";
 
 const PAGE_SIZE = 50;
 
@@ -24,7 +24,7 @@ export async function transactionsView({ params, meta, filters, refreshMeta }) {
     direction: "desc",
     page: 1,
   };
-  const scope = params.month ? { ...filters, ...monthRange(params.month) } : params.ids ? { account: filters.account } : filters;
+  const scope = params.month ? { ...filters, ...monthRange(params.month) } : params.ids ? {} : filters;
   const results = h("div", null);
   const summary = h("p", { class: "muted" }, "");
   const query = () => ({
@@ -100,10 +100,11 @@ export async function transactionsView({ params, meta, filters, refreshMeta }) {
     return h("div", null,
       h("div", { class: "table-wrap" }, h("table", null,
         h("thead", null, h("tr", null,
-          header("date", "Fecha"), header("merchant", "Comercio y concepto"), header("category", "Categoría"),
+          header("date", "Fecha"), hasManyAccounts(meta) ? h("th", null, "Cuenta") : null, header("merchant", "Comercio y concepto"), header("category", "Categoría"),
           header("amount", "Importe", true), h("th", { class: "right" }, "Saldo"))),
         h("tbody", null, data.items.map((tx) => h("tr", null,
           h("td", { class: "nowrap num" }, fmtDate(tx.date)),
+          hasManyAccounts(meta) ? h("td", null, accountTag(meta, tx.account_id)) : null,
           h("td", null,
             h("div", { class: "tx-name" }, tx.merchant),
             h("div", { class: "tx-concept", title: [tx.concept, tx.notes].filter(Boolean).join(" · ") },

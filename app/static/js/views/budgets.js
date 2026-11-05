@@ -9,7 +9,7 @@ export async function budgetsView({ meta, refreshMeta, filters }) {
   const root = h("div", { class: "stack" });
 
   const load = async () => {
-    const data = await api(`/api/budgets${filters.account ? `?account=${filters.account}` : ""}`);
+    const data = await api(`/api/budgets${filters.accounts ? `?accounts=${filters.accounts}` : ""}`);
     const active = data.items.filter((i) => i.budget);
     const rest = data.items.filter((i) => !i.budget && (i.suggested || i.spent > 0));
     const totalBudget = active.reduce((sum, i) => sum + i.budget, 0);
@@ -37,6 +37,7 @@ export async function budgetsView({ meta, refreshMeta, filters }) {
 
     const sections = [
       pageHead("Presupuestos", `Gasto de ${fmtMonthLong(data.month)} frente a tu límite mensual`),
+      filters.accounts ? h("div", { class: "notice info" }, "Esta página suma solo las cuentas marcadas, pero los avisos de presupuesto siempre cuentan todas tus cuentas.") : null,
       active.length
         ? h("section", { class: "card" },
             h("div", { class: "card-head" },

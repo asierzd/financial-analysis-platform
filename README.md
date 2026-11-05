@@ -43,7 +43,7 @@ y después pulsa «Deshacer» en el historial de importaciones. Se regeneran con
 | **Inicio** | Saldo, ingresos, gastos, tasa de ahorro, alertas, gráficos de pastel de gastos e ingresos, categorías, comercios y próximos cargos |
 | **Movimientos** | Búsqueda, filtros, cambio de categoría, reglas y exportación a CSV |
 | **Análisis** | Salud financiera, regla 50/30/20, evolución, mapa de calor, variabilidad y tendencia, concentración del gasto, cargos fijos, comisiones, proyección de saldo y simulador de recortes |
-| **Alertas** | Comisiones, duplicados, importes inusuales, comercios nuevos, subidas de precio, cargos o ingresos ausentes, nuevos cargos periódicos, saldo negativo o bajo, presupuestos y saldos que no cuadran |
+| **Alertas** | Traspasos entre tus cuentas por confirmar, comisiones, duplicados, importes inusuales, comercios nuevos, subidas de precio, cargos o ingresos ausentes, nuevos cargos periódicos, saldo negativo o bajo, presupuestos y saldos que no cuadran |
 | **Presupuestos** | Límite mensual por categoría, con sugerencia a partir de tu historial |
 | **Reglas y ajustes** | Reglas de clasificación, categorías propias, umbrales de alertas y cuentas |
 
@@ -57,12 +57,15 @@ Criterios de cálculo:
 
 ## Varias cuentas
 
-Cada banco va en su propia cuenta y puedes filtrar por ella en la barra superior. Si no hay una coincidencia clara por
-IBAN o por banco, la importación propone una cuenta nueva.
+Cada cuenta aparece en la barra superior con su banco, los últimos dígitos del IBAN y su saldo. Marca o desmarca las
+que quieras sumar: Inicio, Movimientos, Análisis, Alertas y Presupuestos se recalculan con esa combinación, y la
+selección se recuerda. Con varias cuentas, los movimientos, alertas y cargos fijos indican a cuál pertenecen. Si no hay
+una coincidencia clara por IBAN o por banco, la importación propone una cuenta nueva.
 
-Una transferencia entre tus propias cuentas de distintos bancos cuenta como gasto en una y como ingreso en la otra,
-porque cada extracto solo ve su lado. Para excluirlas, crea una regla con un texto que las identifique (por ejemplo,
-tu nombre) y la categoría «Traspasos entre mis cuentas».
+Una transferencia entre tus cuentas de distintos bancos parece un gasto en una y un ingreso en la otra, porque cada
+extracto solo ve su lado. La aplicación empareja importes iguales de signo contrario en fechas cercanas y te los propone
+en **Alertas**. Nada se excluye hasta que confirmas, y cada decisión se puede deshacer. Los avisos de presupuesto siempre
+cuentan todas las cuentas. El margen de días se cambia en los umbrales de alertas.
 
 ## Tus datos
 

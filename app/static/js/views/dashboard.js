@@ -1,6 +1,6 @@
 import { chartCard, drawColumns, drawLines, drawPie, pieSlices, sharePercent } from "../charts.js";
 import {
-  api, bars, card, delta, emptyState, eur, eur0, fmtDate, fmtDayMonth, fmtMonthLong, h, link, pct, qs, statusChip, tile,
+  accountTag, api, bars, card, delta, emptyState, eur, eur0, fmtDate, fmtDayMonth, fmtMonthLong, h, hasManyAccounts, link, pct, qs, statusChip, tile,
 } from "../ui.js";
 
 const INCOME = "var(--series-1)";
@@ -70,7 +70,7 @@ export function balanceCard(series) {
   });
 }
 
-export async function dashboardView({ filters, navigate }) {
+export async function dashboardView({ filters, navigate, meta }) {
   const data = await api(`/api/dashboard${qs(filters)}`);
   if (data.empty) {
     return h("div", null, h("section", { class: "card" }, emptyState(
@@ -91,14 +91,19 @@ export async function dashboardView({ filters, navigate }) {
       h("div", { class: "card" },
         h("div", { class: "tile-label" }, "Saldo actual"),
         h("div", { class: "hero-value" }, data.balance === null ? "—" : eur(data.balance)),
-        h("div", { class: "tile-note" }, data.balance === null ? "El extracto no incluye saldo" : `A ${fmtDate(data.balance_date)}`),
+        h("div", { class: "tile-note" }, data.balance === null ? "El extracto no incluye saldo" : `A ${fmtDate(data.balance_date)}${data.balance_accounts > 1 ? ` · suma de ${data.balance_accounts} cuentas` : ""}`),
       ),
       tile("Ingresos", eur0(totals.income), delta(totals.income, previous?.income, compare)),
       tile("Gastos", eur0(totals.expense), delta(totals.expense, previous?.expense, { ...compare, upIsGood: false })),
       tile("Balance del periodo", eur0(totals.net), `${totals.count} movimientos`),
       tile("Tasa de ahorro", pct(totals.savings_rate), savingsNote),
     ),
-    data.alerts.length ? alertsCard(data.alerts) : null,
+    meta.transfers.count ? h("div", { class: "notice info row spread" },
+      h("span", null, meta.transfers.count === 1
+        ? `1 posible traspaso entre tus cuentas (${eur(meta.transfers.total_cents)}) cuenta ahora como gasto y como ingreso.`
+        : `${meta.transfers.count} posibles traspasos entre tus cuentas (${eur(meta.transfers.total_cents)}) cuentan ahora como gasto y como ingreso.`),
+      link("#/alertas", "Revisar →", { class: "nowrap" })) : null,
+    data.alerts.length ? alertsCard(data.alerts, meta) : null,
     h("div", { class: "grid cols-2" }, monthlyCard(data.monthly, navigate), balanceCard(data.balance_series)),
     h("div", { class: "grid cols-2" },
       pieCard("Reparto de los gastos", data.categories, EXPENSE_SLOTS, navigate, "Sin gastos en este periodo."),
@@ -113,15 +118,15 @@ export async function dashboardView({ filters, navigate }) {
           ? bars(data.merchants.map((m) => ({ ...m, name: m.merchant })), { onClick: (m) => navigate(`#/movimientos?q=${encodeURIComponent(m.name)}`) })
           : h("p", { class: "muted" }, "Sin gastos en este periodo.")),
     ),
-    data.upcoming.length ? upcomingCard(data.upcoming) : null,
+    data.upcoming.length ? upcomingCard(data.upcoming, meta) : null,
   );
 }
 
-function alertsCard(alerts) {
+function alertsCard(alerts, meta) {
   return card("Requiere tu atención", null,
     alerts.map((alert) => h("div", { class: "alert-item" },
       h("div", null,
-        statusChip(alert.severity),
+        h("div", { class: "row" }, statusChip(alert.severity), accountTag(meta, alert.account_id)),
         h("div", { class: "alert-title" }, alert.title),
         h("div", { class: "alert-detail" }, `${fmtDate(alert.date)} · ${alert.detail}`)),
     )),
@@ -129,12 +134,13 @@ function alertsCard(alerts) {
   );
 }
 
-function upcomingCard(items) {
+function upcomingCard(items, meta) {
   return card("Próximos cargos e ingresos previstos", "Estimados a partir de lo que se repite en tu historial",
     h("div", { class: "table-wrap" }, h("table", null,
-      h("thead", null, h("tr", null, h("th", null, "Fecha aprox."), h("th", null, "Concepto"), h("th", null, "Frecuencia"), h("th", { class: "right" }, "Importe"))),
+      h("thead", null, h("tr", null, h("th", null, "Fecha aprox."), hasManyAccounts(meta) ? h("th", null, "Cuenta") : null, h("th", null, "Concepto"), h("th", null, "Frecuencia"), h("th", { class: "right" }, "Importe"))),
       h("tbody", null, items.map((r) => h("tr", null,
         h("td", { class: "nowrap" }, fmtDate(r.next_date)),
+        hasManyAccounts(meta) ? h("td", null, accountTag(meta, r.account_id)) : null,
         h("td", null, r.merchant),
         h("td", { class: "muted" }, r.frequency),
         h("td", { class: `right num ${r.direction === "in" ? "pos" : ""}` }, eur(r.direction === "in" ? r.avg_cents : -r.avg_cents))))))));

@@ -82,6 +82,11 @@ def build_rows():
     add(date(2026, 4, 20), "TALLER MECANICO HERMANOS RUIZ", -3900.0, CARD)
     add(date(2025, 11, 5), "Devolución AMAZON EU SARL", 34.5, "Devolución")
     add(date(2026, 2, 17), "Transferencia recibida de MARIA LOPEZ", 500.0, "Transferencia")
+    # Salidas hacia la cuenta ficticia de Santander (ver generar_ejemplo_santander.py).
+    add(date(2026, 3, 10), "Transferencia a favor de TITULAR EJEMPLO", -400.0, "Transferencia")
+    add(date(2026, 7, 6), "Transferencia a favor de TITULAR EJEMPLO", -250.0, "Transferencia")
+    # Coincide en importe con un Bizum que recibe la otra cuenta, pero no es un traspaso: se descartaría a mano.
+    add(date(2026, 9, 21), "Bizum a favor de Pablo R", -35.0, "Bizum")
 
     # Una entrada de piso que deja la cuenta en descubierto durante unos días.
     events.sort(key=lambda e: e[0])
@@ -103,7 +108,7 @@ def write(path: Path):
     ws.title = "Movimientos"
     ws.append([None, "Últimos movimientos"])
     ws.append([None, "BBVA · Cuenta Online (datos ficticios)"])
-    ws.append([None, "ES00 0000 0000 0000 0000 0000"])
+    ws.append([None, "ES00 0182 0000 0000 0000 1111"])
     ws.append([])
     ws.append([None, "F. Valor", "Fecha", "Concepto", "Movimiento", "Importe", "Divisa", "Disponible", "Divisa", "Observaciones"])
     for day, concept, amount, balance, movement, notes in reversed(build_rows()):

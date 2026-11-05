@@ -190,6 +190,7 @@ DEFAULT_SETTINGS = {
     "new_merchant_eur": 200,     # primer movimiento con un comercio por encima de este importe
     "price_increase_pct": 5,     # subida en un cargo periódico estable
     "low_balance_eur": 100,      # aviso si el saldo actual cae por debajo
+    "transfer_window_days": 3,   # margen entre la salida de una cuenta y la entrada en otra
     "budget_warn_pct": 90,       # aviso cuando el gasto del mes se acerca al presupuesto
 }
 

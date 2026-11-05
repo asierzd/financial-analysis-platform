@@ -175,7 +175,7 @@ export function confirmButton(label, confirmLabel, run, props = {}) {
   let timer = null;
   const button = h("button", {
     type: "button",
-    class: `mini danger ${props.class ?? ""}`,
+    class: `mini ${props.danger === false ? "" : "danger"} ${props.class ?? ""}`,
     onclick: async () => {
       if (!armed) {
         armed = true;
@@ -209,5 +209,25 @@ export function segmented(options, selected, onChange, ariaLabel) {
 
 export const emptyState = (title, text, ...actions) =>
   h("div", { class: "empty" }, h("h2", null, title), h("p", null, text), actions.length ? h("div", { class: "row" }, actions) : null);
+
+// Últimos dígitos del IBAN, solo si no vienen enmascarados: distinguen dos cuentas del mismo banco.
+export function ibanTail(iban) {
+  const tail = (iban ?? "").slice(-4);
+  return /^\d{4}$/.test(tail) ? tail : null;
+}
+
+export function accountLabel(account) {
+  const tail = ibanTail(account.iban);
+  return tail ? `${account.name} ··${tail}` : account.name;
+}
+
+// Con una sola cuenta no aporta nada y no se muestra.
+export function accountTag(meta, accountId) {
+  if (meta.accounts.length < 2) return null;
+  const account = meta.accounts.find((a) => a.id === accountId);
+  return account ? h("span", { class: "tag nowrap", title: account.bank || null }, accountLabel(account)) : null;
+}
+
+export const hasManyAccounts = (meta) => meta.accounts.length > 1;
 
 export const link = (href, text, props) => h("a", { href, ...props }, text);

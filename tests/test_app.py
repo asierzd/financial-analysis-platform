@@ -262,7 +262,7 @@ def test_second_bank_is_not_proposed_into_the_first_banks_account(client):
     done = upload(client, data, account_name="Cuenta Santander").json()
     accounts = client.get("/api/meta").json()["accounts"]
     assert [(a["name"], a["bank"]) for a in accounts] == [("Cuenta BBVA", "BBVA"), ("Cuenta Santander", "Santander")]
-    assert client.get("/api/dashboard", params={"account": done["account_id"]}).json()["totals"]["count"] == 2
+    assert client.get("/api/dashboard", params={"accounts": done["account_id"]}).json()["totals"]["count"] == 2
     # Y el siguiente fichero de Santander sí se propone en su cuenta, sin duplicar.
     again = upload(client, data, path="/api/import/preview").json()
     assert again["account_id"] == done["account_id"] and again["preview"]["new"] == 0
@@ -296,6 +296,192 @@ def test_new_merchant_grace_applies_to_each_account(client):
     upload(client, bbva_xlsx(rows), account_name="Uno")
     upload(client, santander_xlsx([["02/06/2026", "02/06/2026", "COMPRA CARA SL", "-900,00", "100,00"]]), account_name="Dos")
     assert "new_merchant" not in alert_types(client)
+
+
+def three_accounts(client):
+    """Tres cuentas con importes reconocibles: 100, 20 y 3 euros de gasto."""
+    ids = []
+    for name, amount, day in [("Uno", -100.0, 1), ("Dos", -20.0, 2), ("Tres", -3.0, 3)]:
+        rows = [["%02d/03/2026" % day, "%02d/03/2026" % day, f"COMPRA {name}", amount, 1000 + amount]]
+        ids.append(upload(client, santander_xlsx(rows, titles=("Movimientos",)), name=f"{name}.xlsx", account_name=name).json()["account_id"])
+    return ids
+
+
+def test_any_combination_of_accounts_can_be_added_up(client):
+    a, b, c = three_accounts(client)
+    expense = lambda accounts: client.get("/api/dashboard", params={"accounts": accounts}).json()["totals"]["expense"]
+    assert expense(f"{a}") == 10000
+    assert expense(f"{a},{c}") == 10300
+    assert expense(f"{b},{c}") == 2300
+    assert expense(f"{a},{b},{c}") == client.get("/api/dashboard").json()["totals"]["expense"] == 12300
+    assert client.get("/api/analysis", params={"accounts": f"{b},{c}"}).json()["fees"]["count"] == 0
+    assert client.get("/api/dashboard", params={"accounts": f"{a},{c}"}).json()["balance"] == 90000 + 99700
+    moved = client.get("/api/transactions", params={"accounts": f"{a},{c}"}).json()
+    assert moved["total"] == 2 and {i["account_name"] for i in moved["items"]} == {"Uno", "Tres"}
+    assert client.get("/api/dashboard", params={"accounts": "x"}).status_code == 422
+
+
+def test_meta_scopes_to_selection_but_always_lists_every_account(client):
+    a, b, c = three_accounts(client)
+    meta = client.get("/api/meta", params={"accounts": f"{a}"}).json()
+    assert meta["count"] == 1 and meta["last"] == "2026-03-01"
+    assert [(x["name"], x["count"], x["balance"]) for x in meta["accounts"]] == [
+        ("Uno", 1, 90000), ("Dos", 1, 98000), ("Tres", 1, 99700)]
+
+
+def test_alerts_follow_selected_accounts_including_counts_and_bulk(client):
+    uno = upload(client, bbva_xlsx([row("2026-01-20", "Comisión de mantenimiento", -15.0)]), account_name="Uno").json()["account_id"]
+    dos = upload(client, santander_xlsx([["20/01/2026", "20/01/2026", "Comision Mantenimiento", "-9,00", "9,00"]]), account_name="Dos").json()["account_id"]
+    assert [a["amount_cents"] for a in client.get("/api/alerts", params={"accounts": dos, "type": "fee"}).json()["items"]] == [-900]
+    assert client.get("/api/meta", params={"accounts": uno}).json()["alerts_new"] == 1
+    counts = client.get("/api/alerts", params={"accounts": dos}).json()["counts"]
+    assert [c["total"] for c in counts if c["type"] == "fee"] == [-900]
+    client.post("/api/alerts/bulk", json={"status": "reviewed", "accounts": str(dos)})
+    assert client.get("/api/meta").json()["alerts_new"] == 1
+
+
+def test_second_account_of_same_bank_gets_a_distinct_name(client):
+    upload(client, santander_xlsx([["01/03/2026", "01/03/2026", "A", "-1,00", "1,00"]], titles=("Santander ES00 0049 0000 0000 0000 1111",)))
+    upload(client, santander_xlsx([["02/03/2026", "02/03/2026", "B", "-1,00", "1,00"]], titles=("Santander ES00 0049 0000 0000 0000 2222",)))
+    assert [a["name"] for a in client.get("/api/meta").json()["accounts"]] == ["Cuenta Santander", "Cuenta Santander 2"]
+
+
+def test_previous_period_is_only_compared_when_every_selected_account_covers_it(client):
+    uno = upload(client, bbva_xlsx(month_rows()), account_name="Uno").json()["account_id"]
+    dos = upload(client, santander_xlsx([["15/10/2025", "15/10/2025", "COMPRA", "-5,00", "5,00"]]), account_name="Dos").json()["account_id"]
+    period = {"from": "2025-10-01", "to": "2025-10-31"}
+    assert client.get("/api/dashboard", params={**period, "accounts": uno}).json()["previous"] is not None
+    assert client.get("/api/dashboard", params=period).json()["previous"] is None
+    assert client.get("/api/dashboard", params={**period, "accounts": dos}).json()["previous"] is None
+
+
+def test_csv_shows_account(client):
+    upload(client, bbva_xlsx([row("2026-01-01", "MERCADONA", -5.0)]), account_name="Mi nómina")
+    assert "Mi nómina" in client.get("/api/transactions.csv").text
+
+
+# ---- traspasos entre cuentas
+
+
+def transfer_setup(client):
+    bbva = upload(client, bbva_xlsx([
+        row("2026-03-10", "Transferencia a favor de MI OTRA CUENTA", -400.0, 600.0),
+        row("2026-03-12", "MERCADONA", -50.0, 550.0),
+        row("2026-04-01", "Bizum a favor de Pablo", -35.0, 515.0),
+    ]), account_name="BBVA").json()["account_id"]
+    sant = upload(client, santander_xlsx([
+        ["01/04/2026", "01/04/2026", "Bizum De Marta Concepto Cena", "35,00", "485,00"],
+        ["11/03/2026", "11/03/2026", "Transferencia De Yo Mismo", "400,00", "450,00"],
+        ["12/03/2026", "12/03/2026", "Devolucion MERCADONA", "50,00", "50,00"],
+    ]), account_name="Santander").json()["account_id"]
+    return bbva, sant
+
+
+def transfer_pairs(client, **params):
+    return client.get("/api/transfers", params=params).json()["pending"]
+
+
+def test_transfer_candidates_pair_opposite_amounts_across_accounts(client):
+    bbva, sant = transfer_setup(client)
+    pairs = transfer_pairs(client)
+    # La compra en Mercadona no se propone aunque coincida con una devolución del mismo importe.
+    assert [(p["amount_cents"], p["gap_days"]) for p in pairs] == [(3500, 0), (40000, 1)]
+    assert pairs[1]["out"]["account_id"] == bbva and pairs[1]["in"]["account_id"] == sant
+    assert client.get("/api/meta").json()["transfers"] == {"count": 2, "total_cents": 43500}
+
+
+def test_nothing_is_excluded_until_the_user_confirms(client):
+    transfer_setup(client)
+    before = client.get("/api/dashboard").json()["totals"]
+    assert before["income"] == 48500 and before["expense"] == 48500
+    pair = transfer_pairs(client)[1]
+    body = {"pairs": [{"out_id": pair["out"]["id"], "in_id": pair["in"]["id"]}], "status": "confirmed"}
+    assert client.post("/api/transfers/decide", json=body).status_code == 200
+    after = client.get("/api/dashboard").json()["totals"]
+    assert after["income"] == 8500 and after["expense"] == 8500
+    assert [p["amount_cents"] for p in transfer_pairs(client)] == [3500]
+
+
+def test_transfer_confirmation_can_be_undone_and_survives_reimport(client):
+    transfer_setup(client)
+    pair = transfer_pairs(client)[1]
+    ids = {"out_id": pair["out"]["id"], "in_id": pair["in"]["id"]}
+    client.post("/api/transfers/decide", json={"pairs": [ids], "status": "confirmed"})
+    client.post("/api/rules", json={"pattern": "nada que ver", "category_id": "ocio"})  # fuerza reclasificar
+    assert client.get("/api/transactions", params={"category": "internos"}).json()["total"] == 2
+
+    client.post("/api/transfers/undo", json=ids)
+    assert client.get("/api/transactions", params={"category": "internos"}).json()["total"] == 0
+    assert client.get("/api/transactions", params={"category": "transfer_out"}).json()["total"] == 2
+    assert len(transfer_pairs(client)) == 2
+
+
+def test_transfer_decision_is_reapplied_after_undoing_and_repeating_an_import(client):
+    rows = [["11/03/2026", "11/03/2026", "Transferencia De Yo Mismo", "400,00", "400,00"]]
+    upload(client, bbva_xlsx([row("2026-03-10", "Transferencia a favor de YO", -400.0, 600.0)]), account_name="A")
+    data = santander_xlsx(rows)
+    upload(client, data, account_name="B")
+    pair = transfer_pairs(client)[0]
+    client.post("/api/transfers/decide", json={"pairs": [{"out_id": pair["out"]["id"], "in_id": pair["in"]["id"]}], "status": "confirmed"})
+    import_id = client.get("/api/imports").json()["items"][0]["id"]
+    client.delete(f"/api/imports/{import_id}")
+    # Ya confirmaste que ese dinero fue a una cuenta tuya: no reaparece como gasto por deshacer la otra importación.
+    assert client.get("/api/dashboard").json()["totals"]["expense"] == 0
+    upload(client, data, account_name="B")
+    totals = client.get("/api/dashboard").json()["totals"]
+    assert totals["income"] == 0 and totals["expense"] == 0
+    assert client.get("/api/transactions", params={"category": "internos"}).json()["total"] == 2
+    assert transfer_pairs(client) == []
+
+
+def test_rejected_transfer_is_not_proposed_again_but_can_be_recovered(client):
+    transfer_setup(client)
+    pair = transfer_pairs(client)[0]
+    ids = {"out_id": pair["out"]["id"], "in_id": pair["in"]["id"]}
+    client.post("/api/transfers/decide", json={"pairs": [ids], "status": "rejected"})
+    assert [p["amount_cents"] for p in transfer_pairs(client)] == [40000]
+    assert client.get("/api/transactions", params={"category": "transfer_out", "q": "Pablo"}).json()["total"] == 1
+    decided = client.get("/api/transfers").json()["decided"]
+    assert [(d["status"], d["amount_cents"]) for d in decided] == [("rejected", 3500)]
+    client.post("/api/transfers/undo", json=ids)
+    assert len(transfer_pairs(client)) == 2
+
+
+def test_transfer_pairing_is_one_to_one_and_prefers_the_closest_date(client):
+    upload(client, bbva_xlsx([row("2026-03-10", "Transferencia a favor de YO", -100.0, 900.0),
+                              row("2026-03-12", "Transferencia a favor de YO", -100.0, 800.0)]), account_name="A")
+    upload(client, santander_xlsx([["12/03/2026", "12/03/2026", "Transferencia De Yo", "100,00", "100,00"]]), account_name="B")
+    pairs = transfer_pairs(client)
+    assert len(pairs) == 1 and pairs[0]["out"]["date"] == "2026-03-12"
+
+
+def test_transfer_window_same_account_and_manual_categories_are_respected(client):
+    upload(client, bbva_xlsx([
+        row("2026-03-01", "Transferencia a favor de A", -100.0), row("2026-03-02", "Transferencia de A", 100.0),  # misma cuenta
+        row("2026-05-01", "Transferencia a favor de B", -200.0),
+        row("2026-07-01", "Transferencia a favor de C", -300.0),
+    ]), account_name="A")
+    upload(client, santander_xlsx([
+        ["10/05/2026", "10/05/2026", "Transferencia De B", "200,00", "200,00"],  # fuera de plazo
+        ["01/07/2026", "01/07/2026", "Transferencia De C", "300,00", "500,00"],
+    ]), account_name="B")
+    assert [p["amount_cents"] for p in transfer_pairs(client)] == [30000]
+    tx = next(t for t in client.get("/api/transactions", params={"q": "favor de C"}).json()["items"])
+    client.patch(f"/api/transactions/{tx['id']}", json={"category_id": "ocio"})
+    assert transfer_pairs(client) == []
+    client.put("/api/settings", json={"transfer_window_days": 10})
+    assert [p["amount_cents"] for p in transfer_pairs(client)] == [20000]
+
+
+def test_invalid_transfer_decisions_are_refused(client):
+    upload(client, bbva_xlsx([row("2026-03-01", "X", -100.0), row("2026-03-02", "Y", 100.0), row("2026-03-03", "Z", 50.0)]))
+    items = {t["concept"]: t["id"] for t in client.get("/api/transactions").json()["items"]}
+    bad = {"pairs": [{"out_id": items["X"], "in_id": items["Y"]}], "status": "confirmed"}
+    assert client.post("/api/transfers/decide", json=bad).status_code == 422  # misma cuenta
+    bad["pairs"][0]["in_id"] = items["Z"]
+    assert client.post("/api/transfers/decide", json=bad).status_code == 422  # importes distintos
+    bad["pairs"][0]["in_id"] = 99999
+    assert client.post("/api/transfers/decide", json=bad).status_code == 422
 
 
 # ---- actualización de una base de datos existente
@@ -691,6 +877,18 @@ def test_santander_sample_imports_and_is_detected(client, tmp_path):
     assert upload(client, path.read_bytes()).json()["new"] == preview["total"]
     income = {c["id"] for c in client.get("/api/dashboard").json()["income_categories"]}
     assert {"bizum_in", "transfer_in", "intereses"} <= income
+
+
+def test_both_samples_propose_the_planted_transfers(client, tmp_path):
+    sys.path.insert(0, str(ROOT / "samples"))
+    import generar_ejemplo
+    import generar_ejemplo_santander
+
+    upload(client, generar_ejemplo.write(tmp_path / "b.xlsx").read_bytes())
+    upload(client, generar_ejemplo_santander.write(tmp_path / "s.xlsx").read_bytes())
+    amounts = {p["amount_cents"] for p in transfer_pairs(client)}
+    assert {40000, 25000, 3500} <= amounts
+    assert [a["iban"][-4:] for a in client.get("/api/meta").json()["accounts"]] == ["1111", "2222"]
 
 
 def test_sample_file_generates_alert_types(client, tmp_path):

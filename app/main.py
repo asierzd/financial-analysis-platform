@@ -21,6 +21,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import alerts as alerts_engine
 from . import analytics
+from . import transfers as transfers_engine
 from .categorize import normalize, reclassify_all
 from .db import connect, get_settings, init_db
 from .ingest import FormatError, parsers
@@ -73,7 +74,18 @@ DB = Depends(get_conn)
 DATE_RE = r"^\d{4}-\d{2}-\d{2}$"
 
 
+def _account_ids(accounts: str | None) -> list[int] | None:
+    """Cuentas seleccionadas, separadas por comas. Sin valor significa todas."""
+    if not accounts:
+        return None
+    try:
+        return [int(x) for x in accounts.split(",")][:100]
+    except ValueError as exc:
+        raise HTTPException(422, "Lista de cuentas no válida.") from exc
+
+
 def _after_data_change(conn: sqlite3.Connection) -> None:
+    transfers_engine.apply_confirmed(conn)
     conn.commit()
     alerts_engine.refresh_alerts(conn)
 
@@ -81,18 +93,35 @@ def _after_data_change(conn: sqlite3.Connection) -> None:
 # ---------------------------------------------------------------- general
 
 
+def _accounts_overview(conn: sqlite3.Connection) -> list[dict]:
+    accounts = {r["id"]: {**dict(r), "count": 0, "first": None, "last": None, "balance": None}
+                for r in conn.execute("SELECT id, name, bank, iban FROM accounts ORDER BY id")}
+    stats = conn.execute("SELECT account_id, COUNT(*) AS n, MIN(date) AS first, MAX(date) AS last FROM transactions GROUP BY account_id")
+    for row in stats:
+        accounts[row["account_id"]].update(count=row["n"], first=row["first"], last=row["last"])
+    for row in conn.execute("SELECT account_id, balance_cents FROM transactions WHERE balance_cents IS NOT NULL ORDER BY date, seq"):
+        accounts[row["account_id"]]["balance"] = row["balance_cents"]
+    return list(accounts.values())
+
+
 @app.get("/api/meta")
-def meta(conn: sqlite3.Connection = DB) -> dict:
-    span = conn.execute("SELECT MIN(date) AS first, MAX(date) AS last, COUNT(*) AS count FROM transactions").fetchone()
+def meta(accounts: str | None = None, conn: sqlite3.Connection = DB) -> dict:
+    """first, last, count y alertas se refieren a las cuentas seleccionadas; `accounts` las lista todas."""
+    ids = _account_ids(accounts)
+    marks = ",".join("?" * len(ids)) if ids else ""
+    tx_where = f"WHERE account_id IN ({marks})" if ids else ""
+    alert_where = f"AND (account_id IN ({marks}) OR account_id IS NULL)" if ids else ""
+    span = conn.execute(f"SELECT MIN(date) AS first, MAX(date) AS last, COUNT(*) AS count FROM transactions {tx_where}", ids or []).fetchone()
     return {
         "first": span["first"],
         "last": span["last"],
         "count": span["count"],
-        "accounts": [dict(r) for r in conn.execute("SELECT id, name, bank, iban FROM accounts ORDER BY id")],
+        "accounts": _accounts_overview(conn),
         "categories": [dict(r) for r in conn.execute("SELECT id, name, kind, grp, is_system FROM categories ORDER BY kind, name")],
-        "alerts_new": conn.execute("SELECT COUNT(*) FROM alerts WHERE active=1 AND status='new'").fetchone()[0],
+        "alerts_new": conn.execute(f"SELECT COUNT(*) FROM alerts WHERE active=1 AND status='new' {alert_where}", ids or []).fetchone()[0],
         "alert_types": alerts_engine.ALERT_TYPES,
         "parsers": [{"id": p.id, "bank": p.bank} for p in parsers()],
+        "transfers": transfers_engine.summary(conn, ids),
     }
 
 
@@ -100,20 +129,20 @@ def meta(conn: sqlite3.Connection = DB) -> dict:
 def dashboard(
     start: str | None = Query(None, alias="from", pattern=DATE_RE),
     end: str | None = Query(None, alias="to", pattern=DATE_RE),
-    account: int | None = None,
+    accounts: str | None = None,
     conn: sqlite3.Connection = DB,
 ) -> dict:
-    return analytics.dashboard(conn, start, end, account)
+    return analytics.dashboard(conn, start, end, _account_ids(accounts))
 
 
 @app.get("/api/analysis")
 def analysis(
     start: str | None = Query(None, alias="from", pattern=DATE_RE),
     end: str | None = Query(None, alias="to", pattern=DATE_RE),
-    account: int | None = None,
+    accounts: str | None = None,
     conn: sqlite3.Connection = DB,
 ) -> dict:
-    return analytics.analysis(conn, start, end, account)
+    return analytics.analysis(conn, start, end, _account_ids(accounts))
 
 
 # ---------------------------------------------------------------- movimientos
@@ -126,14 +155,14 @@ SORTS = {
 }
 
 
-def _tx_filter(start, end, account, category, kind, search, min_amount, max_amount, ids=None) -> tuple[str, list]:
+def _tx_filter(start, end, accounts, category, kind, search, min_amount, max_amount, ids=None) -> tuple[str, list]:
     where, params = ["1=1"], []
     if start:
         where.append("t.date >= ?"); params.append(start)
     if end:
         where.append("t.date <= ?"); params.append(end)
-    if account:
-        where.append("t.account_id = ?"); params.append(account)
+    if accounts:
+        where.append(f"t.account_id IN ({','.join('?' * len(accounts))})"); params += accounts
     if category:
         where.append("t.category_id = ?"); params.append(category)
     if kind == "income":
@@ -155,8 +184,9 @@ def _tx_filter(start, end, account, category, kind, search, min_amount, max_amou
 
 _TX_SELECT = (
     "SELECT t.id, t.account_id, t.date, t.value_date, t.amount_cents, t.currency, t.balance_cents, t.concept, t.movement, "
-    "t.notes, t.merchant, t.category_id, t.category_source, t.user_note, c.name AS category_name, c.kind AS kind "
-    "FROM transactions t JOIN categories c ON c.id = t.category_id "
+    "t.notes, t.merchant, t.category_id, t.category_source, t.user_note, c.name AS category_name, c.kind AS kind, "
+    "a.name AS account_name, a.bank AS account_bank "
+    "FROM transactions t JOIN categories c ON c.id = t.category_id JOIN accounts a ON a.id = t.account_id "
 )
 
 
@@ -173,7 +203,7 @@ def _parse_ids(ids: str | None) -> list[int] | None:
 def list_transactions(
     start: str | None = Query(None, alias="from", pattern=DATE_RE),
     end: str | None = Query(None, alias="to", pattern=DATE_RE),
-    account: int | None = None,
+    accounts: str | None = None,
     category: str | None = None,
     kind: Literal["income", "expense"] | None = None,
     q: str | None = None,
@@ -186,7 +216,7 @@ def list_transactions(
     size: int = Query(50, ge=1, le=200),
     conn: sqlite3.Connection = DB,
 ) -> dict:
-    where, params = _tx_filter(start, end, account, category, kind, q, min_amount, max_amount, _parse_ids(ids))
+    where, params = _tx_filter(start, end, _account_ids(accounts), category, kind, q, min_amount, max_amount, _parse_ids(ids))
     summary = conn.execute(
         f"SELECT COUNT(*) AS n, COALESCE(SUM(CASE WHEN t.amount_cents>0 THEN t.amount_cents END),0) AS money_in, "
         f"COALESCE(SUM(CASE WHEN t.amount_cents<0 THEN t.amount_cents END),0) AS money_out "
@@ -215,7 +245,7 @@ def _csv_safe(text: str) -> str:
 def export_transactions(
     start: str | None = Query(None, alias="from", pattern=DATE_RE),
     end: str | None = Query(None, alias="to", pattern=DATE_RE),
-    account: int | None = None,
+    accounts: str | None = None,
     category: str | None = None,
     kind: Literal["income", "expense"] | None = None,
     q: str | None = None,
@@ -223,15 +253,15 @@ def export_transactions(
     max_amount: float | None = None,
     conn: sqlite3.Connection = DB,
 ) -> StreamingResponse:
-    where, params = _tx_filter(start, end, account, category, kind, q, min_amount, max_amount)
+    where, params = _tx_filter(start, end, _account_ids(accounts), category, kind, q, min_amount, max_amount)
     rows = conn.execute(f"{_TX_SELECT} WHERE {where} ORDER BY t.date DESC, t.seq DESC", params).fetchall()
     buffer = io.StringIO()
     buffer.write("﻿")
     writer = csv.writer(buffer, delimiter=";")
-    writer.writerow(["Fecha", "Comercio", "Concepto", "Categoría", "Importe", "Divisa", "Saldo", "Nota"])
+    writer.writerow(["Fecha", "Cuenta", "Comercio", "Concepto", "Categoría", "Importe", "Divisa", "Saldo", "Nota"])
     for r in rows:
         writer.writerow([
-            r["date"], _csv_safe(r["merchant"]), _csv_safe(r["concept"]), r["category_name"],
+            r["date"], _csv_safe(r["account_name"]), _csv_safe(r["merchant"]), _csv_safe(r["concept"]), r["category_name"],
             f"{r['amount_cents'] / 100:.2f}".replace(".", ","), r["currency"],
             "" if r["balance_cents"] is None else f"{r['balance_cents'] / 100:.2f}".replace(".", ","),
             _csv_safe(r["user_note"]),
@@ -295,7 +325,7 @@ def list_alerts(
     status: Literal["new", "reviewed", "dismissed", "all"] = "new",
     type: str | None = None,
     severity: Literal["critical", "warning", "info"] | None = None,
-    account: int | None = None,
+    accounts: str | None = None,
     conn: sqlite3.Connection = DB,
 ) -> dict:
     where, params = ["active=1"], []
@@ -305,14 +335,16 @@ def list_alerts(
         where.append("type=?"); params.append(type)
     if severity:
         where.append("severity=?"); params.append(severity)
-    if account:
-        where.append("(account_id=? OR account_id IS NULL)"); params.append(account)
+    ids = _account_ids(accounts)
+    if ids:
+        where.append(f"(account_id IN ({','.join('?' * len(ids))}) OR account_id IS NULL)"); params += ids
     rows = conn.execute(
         f"SELECT * FROM alerts WHERE {' AND '.join(where)} ORDER BY "
         "CASE severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, date DESC, id DESC LIMIT 500", params,
     )
+    scope = f"AND (account_id IN ({','.join('?' * len(ids))}) OR account_id IS NULL)" if ids else ""
     counts = conn.execute("SELECT type, severity, COUNT(*) AS n, COALESCE(SUM(amount_cents),0) AS total FROM alerts "
-                          "WHERE active=1 AND status='new' GROUP BY type, severity").fetchall()
+                          f"WHERE active=1 AND status='new' {scope} GROUP BY type, severity", ids or []).fetchall()
     return {"items": [analytics.alert_row(r) for r in rows], "counts": [dict(r) for r in counts]}
 
 
@@ -332,6 +364,7 @@ def update_alert(alert_id: int, body: AlertUpdate, conn: sqlite3.Connection = DB
 class AlertBulk(BaseModel):
     status: Literal["reviewed", "dismissed"]
     type: str | None = None
+    accounts: str | None = None
 
 
 @app.post("/api/alerts/bulk")
@@ -340,17 +373,62 @@ def bulk_alerts(body: AlertBulk, conn: sqlite3.Connection = DB) -> dict:
     if body.type:
         sql += " AND type=?"
         params.append(body.type)
+    ids = _account_ids(body.accounts)
+    if ids:
+        sql += f" AND (account_id IN ({','.join('?' * len(ids))}) OR account_id IS NULL)"
+        params += ids
     cursor = conn.execute(sql, params)
     conn.commit()
     return {"updated": cursor.rowcount}
+
+
+# ---------------------------------------------------------------- traspasos entre cuentas
+
+
+@app.get("/api/transfers")
+def list_transfers(accounts: str | None = None, conn: sqlite3.Connection = DB) -> dict:
+    return {"pending": transfers_engine.find_candidates(conn, _account_ids(accounts)), "decided": transfers_engine.decided(conn)}
+
+
+class TransferPair(BaseModel):
+    out_id: int
+    in_id: int
+
+
+class TransferDecision(BaseModel):
+    pairs: list[TransferPair] = Field(min_length=1, max_length=2000)
+    status: Literal["confirmed", "rejected"]
+
+
+@app.post("/api/transfers/decide")
+def decide_transfers(body: TransferDecision, conn: sqlite3.Connection = DB) -> dict:
+    try:
+        for pair in body.pairs:
+            transfers_engine.decide(conn, pair.out_id, pair.in_id, body.status)
+    except ValueError as exc:
+        conn.rollback()
+        raise HTTPException(422, str(exc)) from exc
+    _after_data_change(conn)
+    return {"decided": len(body.pairs)}
+
+
+@app.post("/api/transfers/undo")
+def undo_transfer(body: TransferPair, conn: sqlite3.Connection = DB) -> dict:
+    try:
+        transfers_engine.undo(conn, body.out_id, body.in_id)
+    except ValueError as exc:
+        conn.rollback()
+        raise HTTPException(422, str(exc)) from exc
+    _after_data_change(conn)
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------- presupuestos
 
 
 @app.get("/api/budgets")
-def list_budgets(account: int | None = None, conn: sqlite3.Connection = DB) -> dict:
-    txs = analytics.load_txs(conn, account)
+def list_budgets(accounts: str | None = None, conn: sqlite3.Connection = DB) -> dict:
+    txs = analytics.load_txs(conn, _account_ids(accounts))
     budgets = {r["category_id"]: r["monthly_cents"] for r in conn.execute("SELECT * FROM budgets")}
     if not txs:
         current, whole = None, []
@@ -532,6 +610,15 @@ def _parse_mapping(mapping: str | None) -> ingest.ManualMapping | None:
         raise HTTPException(422, "Mapeo de columnas no válido.") from exc
 
 
+def _unique_account_name(conn: sqlite3.Connection, name: str) -> str:
+    """Dos cuentas del mismo banco no deben llamarse igual, o no se distinguirían en el selector."""
+    taken = {r["name"].lower() for r in conn.execute("SELECT name FROM accounts")}
+    candidate, number = name, 2
+    while candidate.lower() in taken:
+        candidate, number = f"{name} {number}", number + 1
+    return candidate
+
+
 def _account_by_iban(conn: sqlite3.Connection, iban: str | None) -> int | None:
     if not iban:
         return None
@@ -589,7 +676,7 @@ async def import_commit(
     if target and not conn.execute("SELECT 1 FROM accounts WHERE id=?", (target,)).fetchone():
         raise HTTPException(422, "Esa cuenta no existe.")
     if not target:
-        name = (account_name or "").strip()[:60] or f"Cuenta {result.bank}"
+        name = _unique_account_name(conn, (account_name or "").strip()[:60] or f"Cuenta {result.bank}")
         target = conn.execute(
             "INSERT INTO accounts (name, bank, iban) VALUES (?,?,?)", (name, result.bank, result.account_hint),
         ).lastrowid

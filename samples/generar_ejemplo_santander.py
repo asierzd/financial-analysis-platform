@@ -52,6 +52,11 @@ def build_rows():
             add(day, "Disposicion En Cajero SANTANDER" + TAIL, -rng.choice([20, 50]))
         day += timedelta(days=1)
 
+    # Entradas desde la cuenta ficticia de BBVA (ver generar_ejemplo.py).
+    add(date(2026, 3, 11), "Transferencia De Titular Ejemplo, Concepto Ahorro.", 400.0)
+    add(date(2026, 7, 6), "Transferencia De Titular Ejemplo, Concepto Ahorro.", 250.0)
+    add(date(2026, 9, 22), "Bizum De Marta Ruiz Concepto Cena", 35.0)
+
     events.sort(key=lambda e: e[0])
     balance = 1500.0
     rows = []
@@ -66,7 +71,7 @@ def write(path: Path) -> Path:
     ws = wb.active
     ws.title = "Movimientos"
     ws.append(["Banco Santander (datos ficticios)"])
-    ws.append(["Cuenta", "ES00 0049 0000 **** **** 0000"])
+    ws.append(["Cuenta", "ES00 0049 0000 **** **** 2222"])
     ws.append([])
     ws.append(["Fecha operación", "Fecha valor", "Concepto", "Importe", "Saldo"])
     for day, concept, amount, balance in reversed(build_rows()):

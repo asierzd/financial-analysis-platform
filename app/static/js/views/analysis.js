@@ -1,13 +1,13 @@
 import { chartCard, drawColumns, drawLines, heatColor, sparkline } from "../charts.js";
 import {
-  api, bars, card, emptyState, eur, eur0, fmtDate, fmtMonth, fmtMonthLong, h, link, pageHead, pct, qs, segmented, signedPct, statusChip, tile,
+  accountTag, api, bars, card, emptyState, eur, eur0, fmtDate, fmtMonth, fmtMonthLong, h, hasManyAccounts, link, pageHead, pct, qs, segmented, signedPct, statusChip, tile,
 } from "../ui.js";
 import { monthlyCard } from "./dashboard.js";
 
 const COLORS = { needs: "var(--series-1)", wants: "var(--series-2)", savings: "var(--series-3)", unknown: "var(--series-4)" };
 const GROUP_LABELS = { needs: "Necesidades", wants: "Caprichos", savings: "Ahorro e inversión", unknown: "Sin clasificar" };
 
-export async function analysisView({ filters, navigate }) {
+export async function analysisView({ filters, navigate, meta }) {
   const data = await api(`/api/analysis${qs(filters)}`);
   if (data.empty) {
     return card(null, null, emptyState("Sin datos para analizar", "Importa un extracto para ver tu análisis financiero.",
@@ -24,7 +24,7 @@ export async function analysisView({ filters, navigate }) {
   const body = h("div", { class: "stack" });
   const show = (id) => {
     try { localStorage.setItem("analysisTab", id); } catch { /* opcional */ }
-    body.replaceChildren(...[tabs[id][1](data, navigate)].flat().filter(Boolean));
+    body.replaceChildren(...[tabs[id][1](data, navigate, meta)].flat().filter(Boolean));
   };
   let first = "salud";
   try { const saved = localStorage.getItem("analysisTab"); if (tabs[saved]) first = saved; } catch { /* opcional */ }
@@ -216,11 +216,12 @@ function categoriesTab(data, navigate) {
   ];
 }
 
-function recurringTable(items) {
+function recurringTable(items, meta) {
   return h("div", { class: "table-wrap" }, h("table", null,
-    h("thead", null, h("tr", null, h("th", null, "Concepto"), h("th", null, "Categoría"), h("th", null, "Frecuencia"), h("th", { class: "right" }, "Último"), h("th", { class: "right" }, "Al año"), h("th", null, "Próximo"), h("th", null, "Historial"))),
+    h("thead", null, h("tr", null, h("th", null, "Concepto"), hasManyAccounts(meta) ? h("th", null, "Cuenta") : null, h("th", null, "Categoría"), h("th", null, "Frecuencia"), h("th", { class: "right" }, "Último"), h("th", { class: "right" }, "Al año"), h("th", null, "Próximo"), h("th", null, "Historial"))),
     h("tbody", null, items.map((r) => h("tr", null,
       h("td", null, h("a", { href: `#/movimientos?q=${encodeURIComponent(r.merchant)}` }, r.merchant)),
+      hasManyAccounts(meta) ? h("td", null, accountTag(meta, r.account_id)) : null,
       h("td", { class: "muted" }, r.category),
       h("td", { class: "muted" }, r.frequency),
       h("td", { class: "right num nowrap" }, eur(r.last_cents)),
@@ -229,7 +230,7 @@ function recurringTable(items) {
       h("td", null, sparkline(r.amounts)))))));
 }
 
-function recurringTab(data) {
+function recurringTab(data, _navigate, meta) {
   const r = data.recurring;
   const subscriptions = r.out.filter((x) => x.category_id === "suscripciones");
   const subscriptionsYear = subscriptions.reduce((sum, x) => sum + x.annual_cents, 0);
@@ -239,9 +240,9 @@ function recurringTab(data) {
       tile("Ingresos periódicos al mes", eur0(r.monthly_in), plural(r.in.length, "ingreso que se repite", "ingresos que se repiten")),
       tile("Suscripciones al año", eur0(subscriptionsYear), plural(subscriptions.length, "activa", "activas"))),
     card("Cargos periódicos activos", "Detectados solos por su regularidad de fecha e importe",
-      r.out.length ? recurringTable(r.out) : h("p", { class: "muted" }, "Se necesitan al menos tres repeticiones para detectar un cargo periódico.")),
-    r.in.length ? card("Ingresos periódicos", null, recurringTable(r.in)) : null,
-    r.inactive.length ? card("Dejaron de cobrarse", "Ya no aparecen con su frecuencia habitual", recurringTable(r.inactive)) : null,
+      r.out.length ? recurringTable(r.out, meta) : h("p", { class: "muted" }, "Se necesitan al menos tres repeticiones para detectar un cargo periódico.")),
+    r.in.length ? card("Ingresos periódicos", null, recurringTable(r.in, meta)) : null,
+    r.inactive.length ? card("Dejaron de cobrarse", "Ya no aparecen con su frecuencia habitual", recurringTable(r.inactive, meta)) : null,
   ];
 }
 

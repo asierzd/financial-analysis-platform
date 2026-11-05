@@ -8,6 +8,7 @@ const SETTING_FIELDS = [
   ["new_merchant_eur", "Comercio nuevo: importe mínimo", "Primer movimiento con un nombre desconocido", "€"],
   ["price_increase_pct", "Subida de precio mínima", "En cargos periódicos con importe estable", "%"],
   ["low_balance_eur", "Saldo bajo", "Avisar si el saldo cae por debajo", "€"],
+  ["transfer_window_days", "Traspasos: días de margen", "Entre la salida de una cuenta y la entrada en otra", "días"],
   ["budget_warn_pct", "Aviso de presupuesto", "Porcentaje gastado a partir del cual avisar", "%"],
 ];
 

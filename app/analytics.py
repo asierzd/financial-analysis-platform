@@ -21,15 +21,15 @@ WEEKDAYS = ("Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Do
 FORECAST_MONTHS = 6
 
 
-def load_txs(conn: sqlite3.Connection, account_id: int | None = None) -> list[dict]:
+def load_txs(conn: sqlite3.Connection, account_ids: list[int] | None = None) -> list[dict]:
     sql = (
         "SELECT t.*, c.name AS category_name, c.kind AS kind, c.grp AS grp FROM transactions t "
         "JOIN categories c ON c.id = t.category_id"
     )
     params: list = []
-    if account_id:
-        sql += " WHERE t.account_id = ?"
-        params.append(account_id)
+    if account_ids:
+        sql += f" WHERE t.account_id IN ({','.join('?' * len(account_ids))})"
+        params.extend(account_ids)
     return [dict(r) for r in conn.execute(sql + " ORDER BY t.date, t.seq", params)]
 
 
@@ -171,8 +171,8 @@ def recurring_list(txs_all: list[dict]) -> list[dict]:
     return [asdict(r) for r in detect_recurring(txs_all)]
 
 
-def dashboard(conn: sqlite3.Connection, start: str | None, end: str | None, account_id: int | None) -> dict:
-    txs_all = load_txs(conn, account_id)
+def dashboard(conn: sqlite3.Connection, start: str | None, end: str | None, account_ids: list[int] | None) -> dict:
+    txs_all = load_txs(conn, account_ids)
     if not txs_all:
         return {"empty": True}
     first, last = txs_all[0]["date"], txs_all[-1]["date"]
@@ -180,15 +180,20 @@ def dashboard(conn: sqlite3.Connection, start: str | None, end: str | None, acco
     end = min(end or last, last)
     txs = in_range(txs_all, start, end)
     prev_start, prev_end = previous_range(start, end)
-    has_previous = prev_end >= first
+    # Solo si todas las cuentas cubren el periodo anterior: con historial parcial, el «antes» sale artificialmente bajo.
+    starts: dict[int, str] = {}
+    for t in txs_all:
+        starts.setdefault(t["account_id"], t["date"])
+    latest_start = max(starts.values())
+    has_previous = prev_start[:7] >= latest_start[:7] and prev_end >= latest_start
     previous = totals(in_range(txs_all, prev_start, prev_end)) if has_previous else None
     upcoming = [r for r in recurring_list(txs_all) if r["active"] and r["next_date"] > r["data_until"]]
     upcoming.sort(key=lambda r: r["next_date"])
     alerts_sql = "SELECT * FROM alerts WHERE active=1 AND status='new'"
     alerts_params: list = []
-    if account_id:
-        alerts_sql += " AND (account_id=? OR account_id IS NULL)"
-        alerts_params.append(account_id)
+    if account_ids:
+        alerts_sql += f" AND (account_id IN ({','.join('?' * len(account_ids))}) OR account_id IS NULL)"
+        alerts_params.extend(account_ids)
     alerts_sql += " ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, date DESC LIMIT 5"
     return {
         "empty": False,
@@ -197,6 +202,7 @@ def dashboard(conn: sqlite3.Connection, start: str | None, end: str | None, acco
         "previous": previous,
         "balance": current_balance(txs_all),
         "balance_date": last,
+        "balance_accounts": len({t["account_id"] for t in txs_all if t["balance_cents"] is not None}),
         "monthly": monthly_rows(txs, start, end),
         "balance_series": balance_series(txs_all, start, end),
         "categories": category_breakdown(txs),
@@ -303,8 +309,8 @@ def forecast(balance: int | None, nets: list[int], last_month: str, history: lis
             "history": (history or [])[-12:], "points": points}
 
 
-def analysis(conn: sqlite3.Connection, start: str | None, end: str | None, account_id: int | None) -> dict:
-    txs_all = load_txs(conn, account_id)
+def analysis(conn: sqlite3.Connection, start: str | None, end: str | None, account_ids: list[int] | None) -> dict:
+    txs_all = load_txs(conn, account_ids)
     if not txs_all:
         return {"empty": True}
     data_first, data_last = txs_all[0]["date"], txs_all[-1]["date"]

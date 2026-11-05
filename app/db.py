@@ -88,6 +88,13 @@ CREATE TABLE IF NOT EXISTS alerts (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS ix_alert_status ON alerts(status, active);
+CREATE TABLE IF NOT EXISTS transfer_decisions (
+    pair_key TEXT PRIMARY KEY,
+    out_fingerprint TEXT NOT NULL,
+    in_fingerprint TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('confirmed','rejected')),
+    decided_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
