@@ -1,0 +1,6 @@
+defusedxml==0.7.1
+fastapi==0.162.0
+openpyxl==3.1.5
+python-multipart==0.0.32
+uvicorn==0.54.0
+xlrd==2.0.2

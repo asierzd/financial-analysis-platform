@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Finanzas</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="side">
+      <div class="brand"><span class="brand-mark" aria-hidden="true"></span>Finanzas</div>
+      <nav id="nav" aria-label="Secciones"></nav>
+      <button id="theme" class="ghost theme-btn" type="button"></button>
+    </aside>
+    <main class="main">
+      <div id="filters"></div>
+      <div id="view" tabindex="-1"></div>
+    </main>
+  </div>
+  <div id="tooltip" class="tooltip" role="status" hidden></div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

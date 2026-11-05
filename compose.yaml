@@ -1,0 +1,14 @@
+services:
+  finanzas:
+    build:
+      context: .
+      dockerfile: Containerfile
+    image: localhost/finanzas:latest
+    container_name: finanzas
+    ports:
+      # Sin login: publicar solo en este ordenador. No cambies 127.0.0.1 sin añadir autenticación.
+      - "127.0.0.1:8765:8000"
+    volumes:
+      # Base de datos SQLite con tus movimientos. Copia esta carpeta para hacer una copia de seguridad.
+      - ./data:/data:Z
+    restart: unless-stopped
