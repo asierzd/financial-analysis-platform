@@ -170,6 +170,180 @@ def test_garbage_and_empty_are_rejected():
         read_file(b"PK\x03\x04roto", "m.xlsx")
 
 
+# ---- Santander
+
+
+def santander_xlsx(rows, titles=("Banco Santander",), header=None, name=None) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    for title in titles:
+        ws.append([title])
+    ws.append([])
+    ws.append(header or ["Fecha operación", "Fecha valor", "Concepto", "Importe", "Saldo"])
+    for r in rows:
+        ws.append(r)
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    return buffer.getvalue()
+
+
+SANTANDER_ROWS = [
+    ["05/03/2026", "06/03/2026", "Pago Movil En LIDL SUPERMERCADOS, MADRID, Tarj. :*123456", "-20,50", "979,50"],
+    ["02/03/2026", "02/03/2026", "Bizum De Marta Ruiz Concepto Cena", "1.000,00", "1.000,00"],
+]
+
+
+def test_santander_text_dates_and_amounts_with_title():
+    raw = read_file(santander_xlsx(SANTANDER_ROWS), "movimientos.xlsx")
+    parser = detect_parser(raw)
+    assert parser.id == "santander"
+    tx = parser.parse(raw).transactions[0]
+    assert tx.date == date(2026, 3, 5) and tx.value_date == date(2026, 3, 6)
+    assert (tx.amount_cents, tx.balance_cents) == (-2050, 97950)
+
+
+@pytest.mark.parametrize("titles,filename", [
+    (("Movimientos de cuenta",), "extracto_santander.xlsx"),
+    (("Cuenta ES12 0049 1234 5678 9012 3456",), "m.xlsx"),
+    (("Movimientos",), "m.xlsx"),
+])
+def test_santander_detected_by_filename_entity_code_or_columns(titles, filename):
+    raw = read_file(santander_xlsx(SANTANDER_ROWS, titles=titles), filename)
+    assert detect_parser(raw).id == "santander"
+
+
+@pytest.mark.parametrize("header", [
+    ["FECHA OPERACIÓN", "FECHA VALOR", "CONCEPTO", "IMPORTE EUR", "SALDO EUR"],
+    ["F. Operación", "F. Valor", "Concepto", "Importe (€)", "Saldo (€)"],
+])
+def test_santander_header_variants(header):
+    raw = read_file(santander_xlsx(SANTANDER_ROWS, header=header), "santander.xlsx")
+    tx = detect_parser(raw).parse(raw).transactions[0]
+    assert (tx.amount_cents, tx.balance_cents) == (-2050, 97950)
+
+
+def test_santander_separate_debit_and_credit_columns():
+    rows = [["05/03/2026", "05/03/2026", "Compra", "20,50", None], ["06/03/2026", "06/03/2026", "Abono", None, "10,00"]]
+    raw = read_file(santander_xlsx(rows, header=["Fecha operación", "Fecha valor", "Concepto", "Cargo", "Abono"]), "santander.csv.xlsx")
+    assert [t.amount_cents for t in detect_parser(raw).parse(raw).transactions] == [-2050, 1000]
+
+
+def test_santander_csv_export():
+    text = "Santander\n\nFecha operación;Fecha valor;Concepto;Importe;Saldo\n05/03/2026;05/03/2026;Cafetería;-3,50;96,50\n"
+    raw = read_file(text.encode("cp1252"), "m.csv")
+    assert detect_parser(raw).id == "santander"
+
+
+def test_each_bank_only_claims_its_own_file():
+    other = read_file(santander_xlsx(SANTANDER_ROWS, titles=("Cuenta ES12 0182 1234 5678 9012 3456",)), "m.xlsx")
+    assert detect_parser(other).id == "bbva"
+    bbva = read_file(bbva_xlsx([row("2026-01-02", "Bizum de Santander Ana", -1, 1)]), "m.xlsx")
+    assert detect_parser(bbva).id == "bbva"
+    assert detect_parser(read_file(b"Dia;Texto;Valor\n01/01/2026;x;1\n", "m.csv")) is None
+
+
+def test_santander_concept_mentioning_bbva_does_not_confuse_detection():
+    rows = [["05/03/2026", "05/03/2026", "Transferencia A Favor De BBVA", "-5,00", "95,00"]]
+    assert detect_parser(read_file(santander_xlsx(rows), "m.xlsx")).id == "santander"
+
+
+# ---- varias cuentas
+
+
+def two_banks(client):
+    upload(client, bbva_xlsx([row("2026-10-01", "MERCADONA", -10.0, 500.0)]))
+    return santander_xlsx(SANTANDER_ROWS)
+
+
+def test_second_bank_is_not_proposed_into_the_first_banks_account(client):
+    data = two_banks(client)
+    answer = upload(client, data, path="/api/import/preview").json()
+    assert answer["preview"]["bank"] == "Santander" and answer["account_id"] is None
+    done = upload(client, data, account_name="Cuenta Santander").json()
+    accounts = client.get("/api/meta").json()["accounts"]
+    assert [(a["name"], a["bank"]) for a in accounts] == [("Cuenta BBVA", "BBVA"), ("Cuenta Santander", "Santander")]
+    assert client.get("/api/dashboard", params={"account": done["account_id"]}).json()["totals"]["count"] == 2
+    # Y el siguiente fichero de Santander sí se propone en su cuenta, sin duplicar.
+    again = upload(client, data, path="/api/import/preview").json()
+    assert again["account_id"] == done["account_id"] and again["preview"]["new"] == 0
+
+
+def test_preview_for_new_account_ignores_the_suggested_one(client):
+    data = bbva_xlsx([row("2026-10-01", "MERCADONA", -10.0, 500.0)])
+    upload(client, data)
+    answer = client.post("/api/import/preview", files={"file": ("m.xlsx", data)}, data={"new_account": "true"}).json()
+    assert answer["account_id"] is None and answer["preview"]["new"] == 1
+
+
+def test_total_balance_adds_both_accounts(client):
+    data = two_banks(client)
+    upload(client, data)
+    assert client.get("/api/dashboard").json()["balance"] == 50000 + 97950
+
+
+def test_older_statement_of_other_bank_does_not_raise_missing_recurring(client):
+    rows = [row(f"2026-{m:02d}-05", "Recibo DIGI", -20.0) for m in range(1, 7)]
+    upload(client, bbva_xlsx(rows, title=False), name="uno.xlsx", account_name="Uno")
+    # Otra cuenta con datos mucho más recientes.
+    upload(client, santander_xlsx([["20/10/2026", "20/10/2026", "COMPRA X", "-1,00", "9,00"]]), account_name="Dos")
+    assert "missing_recurring" not in alert_types(client)
+    recurring = client.get("/api/analysis").json()["recurring"]
+    assert [r["merchant"] for r in recurring["out"]] == ["Digi"]
+
+
+def test_new_merchant_grace_applies_to_each_account(client):
+    rows = [row("2026-01-02", "MERCADONA", -10.0), row("2026-06-01", "MERCADONA", -10.0)]
+    upload(client, bbva_xlsx(rows), account_name="Uno")
+    upload(client, santander_xlsx([["02/06/2026", "02/06/2026", "COMPRA CARA SL", "-900,00", "100,00"]]), account_name="Dos")
+    assert "new_merchant" not in alert_types(client)
+
+
+# ---- actualización de una base de datos existente
+
+
+def test_upgrade_moves_existing_bizum_income_to_its_new_category(client, tmp_path):
+    rows = [row("2026-01-02", "Bizum de Laura", 15.0, 100.0), row("2026-01-03", "Bizum de Ana", 20.0, 120.0)]
+    upload(client, bbva_xlsx(rows))
+    conn = connect(tmp_path / "finanzas.db")
+    # Estado de la versión anterior: Bizum dentro de transferencias; uno corregido a mano.
+    conn.execute("UPDATE categories SET name='Transferencias y Bizum recibidos' WHERE id='transfer_in'")
+    conn.execute("UPDATE rules SET category_id='transfer_in' WHERE pattern='BIZUM' AND sign='in'")
+    conn.execute("UPDATE transactions SET category_id='transfer_in'")
+    conn.execute("UPDATE transactions SET category_id='nomina', category_source='user', rule_id=NULL WHERE concept='Bizum de Ana'")
+    conn.commit()
+    conn.close()
+    import app.main as main
+
+    with TestClient(main.app):  # un nuevo arranque aplica la actualización
+        pass
+    conn = connect(tmp_path / "finanzas.db")
+    categories = dict(conn.execute("SELECT concept, category_id FROM transactions").fetchall())
+    assert categories == {"Bizum de Laura": "bizum_in", "Bizum de Ana": "nomina"}
+    assert conn.execute("SELECT name FROM categories WHERE id='transfer_in'").fetchone()[0] == "Transferencias recibidas"
+    conn.close()
+
+
+def test_upgrade_keeps_disabled_system_rules_and_user_rules(client, tmp_path):
+    rules = client.get("/api/rules").json()["items"]
+    target = next(r for r in rules if r["pattern"] == "MERCADONA")
+    client.patch(f"/api/rules/{target['id']}", json={"enabled": False})
+    client.post("/api/rules", json={"pattern": "tienda pepe", "category_id": "ocio"})
+    import app.main as main
+
+    with TestClient(main.app):
+        pass
+    after = {r["pattern"]: r for r in client.get("/api/rules").json()["items"]}
+    assert after["MERCADONA"]["enabled"] == 0 and after["TIENDA PEPE"]["category_name"] == "Ocio y cultura"
+
+
+def test_income_breakdown_separates_salary_bizum_and_transfers(client):
+    rows = [row("2026-01-02", "Nómina ACME", 2000.0), row("2026-01-03", "Bizum de Laura", 50.0),
+            row("2026-01-04", "Transferencia de Juan", 150.0)]
+    upload(client, bbva_xlsx(rows))
+    income = {c["id"]: c["amount"] for c in client.get("/api/dashboard").json()["income_categories"]}
+    assert income == {"nomina": 200000, "bizum_in": 5000, "transfer_in": 15000}
+
+
 # ---- clasificación
 
 
@@ -195,7 +369,17 @@ def conn(tmp_path):
     ("Comisión de mantenimiento", -15, "comisiones", None),
     ("Traspaso a cuenta ahorro", -250, "internos", None),
     ("Reintegro cajero", -50, "efectivo", None),
-    ("Bizum de Laura", 10, "transfer_in", None),
+    ("Bizum de Laura", 10, "bizum_in", None),
+    ("Transferencia recibida de Juan", 10, "transfer_in", None),
+    ("Pago Movil En LIDL SUPERMERCADOS, MADRID, Tarj. :*123456", -20, "supermercado", "Lidl"),
+    ("Transaccion Contactless En BAR MANOLO, MADRID, Tarj. :*123456", -5, "restaurantes", "Bar Manolo"),
+    ("Compra Internet En AMAZON EU SARL, LUXEMBURGO, Tarj. :*123456", -30, "compras", "Amazon"),
+    ("Pago Movil En TIENDA PEPE, BILBAO, Tarj. :*123456", -20, "sin_clasificar", "Tienda Pepe"),
+    ("Bizum De Marta Ruiz Concepto Cena", 15, "bizum_in", "Marta Ruiz"),
+    ("Bizum A Favor De Carlos Gil Concepto Regalo", -15, "transfer_out", "Carlos Gil"),
+    ("Transferencia De Juan Garcia, Concepto Alquiler.", 500, "transfer_in", "Juan Garcia"),
+    ("Recibo Digi Spain Telecom Sl Nº Recibo 0049 55 Ref. Mandato 11", -20, "recibos", "Digi"),
+    ("Disposicion En Cajero SANTANDER, MADRID, Tarj. :*123456", -50, "efectivo", None),
     ("Bizum a favor de Laura", -10, "transfer_out", None),
     ("Recibo PROVEEDOR RARO", -10, "recibos", None),
     ("TIENDA DESCONOCIDA", -10, "sin_clasificar", None),
@@ -495,6 +679,18 @@ def test_foreign_host_and_origin_blocked(client):
     assert client.get("/api/meta", headers={"host": "evil.example"}).status_code == 400
     assert client.post("/api/alerts/bulk", json={"status": "reviewed"}, headers={"origin": "https://evil.example"}).status_code == 403
     assert client.post("/api/alerts/bulk", json={"status": "reviewed"}, headers={"origin": "http://testserver"}).status_code == 200
+
+
+def test_santander_sample_imports_and_is_detected(client, tmp_path):
+    sys.path.insert(0, str(ROOT / "samples"))
+    import generar_ejemplo_santander
+
+    path = generar_ejemplo_santander.write(tmp_path / "santander.xlsx")
+    preview = upload(client, path.read_bytes(), path="/api/import/preview").json()["preview"]
+    assert preview["bank"] == "Santander" and preview["total"] > 100 and preview["classified"] > preview["total"] * 0.9
+    assert upload(client, path.read_bytes()).json()["new"] == preview["total"]
+    income = {c["id"] for c in client.get("/api/dashboard").json()["income_categories"]}
+    assert {"bizum_in", "transfer_in", "intereses"} <= income
 
 
 def test_sample_file_generates_alert_types(client, tmp_path):

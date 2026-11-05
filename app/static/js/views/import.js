@@ -42,11 +42,11 @@ export async function importView({ meta, reload, refreshMeta, navigate }) {
     return data;
   };
 
-  const start = async (selected, mapping = null, accountId = null) => {
+  const start = async (selected, mapping = null, accountId = null, newAccount = false) => {
     file = selected;
     stage.replaceChildren(card(null, null, h("p", { class: "muted" }, `Leyendo ${file.name}…`)));
     try {
-      const answer = await api("/api/import/preview", { method: "POST", body: form({ mapping, account_id: accountId }) });
+      const answer = await api("/api/import/preview", { method: "POST", body: form({ mapping, account_id: accountId, new_account: newAccount ? "true" : null }) });
       if (answer.status === "needs_mapping") stage.replaceChildren(mappingStep(answer.raw));
       else stage.replaceChildren(previewStep(answer.preview, answer.account_id, mapping));
     } catch (error) {
@@ -57,13 +57,12 @@ export async function importView({ meta, reload, refreshMeta, navigate }) {
   const previewStep = (p, suggestedAccount, mapping) => {
     const accountChoice = h("select", { "aria-label": "Cuenta de destino" },
       meta.accounts.map((a) => h("option", { value: a.id, selected: a.id === suggestedAccount }, a.name)),
-      h("option", { value: "", selected: !suggestedAccount && !meta.accounts.length }, "Cuenta nueva"));
+      h("option", { value: "", selected: !suggestedAccount }, "Cuenta nueva"));
     const newName = h("input", { type: "text", value: `Cuenta ${p.bank}`, maxlength: 60, "aria-label": "Nombre de la cuenta nueva" });
     const syncName = () => { newName.hidden = accountChoice.value !== ""; };
     accountChoice.addEventListener("change", async () => {
-      syncName();
       // Los movimientos ya importados dependen de la cuenta: se recalcula la vista previa.
-      if (accountChoice.value) start(file, mapping, accountChoice.value);
+      start(file, mapping, accountChoice.value || null, !accountChoice.value);
     });
     syncName();
 
@@ -193,13 +192,13 @@ export async function importView({ meta, reload, refreshMeta, navigate }) {
     pageHead("Importar movimientos", "Puedes repetir ficheros o solaparlos: los movimientos ya importados se ignoran"),
     stage,
     h("div", { class: "grid cols-2" },
-      card("Cómo descargarlos de BBVA", "La opción puede cambiar un poco de sitio según la versión de la web",
+      card("Cómo descargarlos de tu banco", "BBVA o Santander. La opción puede cambiar un poco de sitio según la versión de la web",
         h("ol", { class: "steps" },
-          h("li", null, "Entra en la web de BBVA desde el ordenador y abre tu cuenta."),
+          h("li", null, "Entra en la web de tu banco desde el ordenador y abre tu cuenta."),
           h("li", null, "Ve a los movimientos y elige el rango de fechas más amplio que te deje."),
           h("li", null, "Usa la opción de descargar o exportar y elige Excel."),
           h("li", null, "Sube aquí ese fichero, sin abrirlo ni modificarlo."))),
-      card("Otros bancos", "BBVA se detecta solo",
+      card("Otros bancos", "BBVA y Santander se detectan solos",
         h("p", { class: "muted" }, "Si subes un Excel o CSV de otro banco, te preguntaré qué es cada columna y lo importaré igual. Se puede añadir un importador automático por banco sin tocar el resto de la aplicación."))),
     card("Historial de importaciones", "Deshacer borra solo los movimientos que añadió esa importación", history),
   );

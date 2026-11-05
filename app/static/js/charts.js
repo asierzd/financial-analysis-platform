@@ -1,6 +1,6 @@
 // Gráficos SVG propios, sin dependencias externas (la aplicación funciona sin internet).
 // Marcas finas, cuadrícula discreta, un solo eje Y, leyenda con 2 o más series, tooltip y vista de tabla.
-import { eur, h, s, fmtMonth } from "./ui.js";
+import { eur, eur0, h, s, fmtMonth } from "./ui.js";
 
 const tooltipEl = () => document.getElementById("tooltip");
 
@@ -265,6 +265,126 @@ export function drawColumns(el, width, { labels, tickLabel = fmtMonth, titleLabe
     if (showLabel(i)) svg.append(s("text", { x: bandX + bandWidth / 2, y: height - 6, "text-anchor": "middle" }, tickLabel(label)));
   });
   el.append(svg);
+}
+
+const SLOTS = 8;
+const OTHER = { color: "var(--series-other)", id: "__other" };
+const isDarkTheme = () => document.documentElement.dataset.theme === "dark"
+  || (!document.documentElement.dataset.theme && matchMedia("(prefers-color-scheme: dark)").matches);
+
+/**
+ * Prepara las porciones: las `max` mayores y el resto en "Otros".
+ * El color sigue a la categoría, no a su posición: si cambias de periodo, Supermercados sigue del mismo color.
+ * preferred: {idCategoría: hueco de la paleta}. Si dos coinciden, la segunda toma el siguiente libre.
+ */
+export function pieSlices(items, preferred = {}, max = 6) {
+  const ranked = items.slice().sort((a, b) => b.amount - a.amount);
+  const shown = ranked.length > max + 1 ? ranked.slice(0, max) : ranked;
+  const rest = ranked.slice(shown.length);
+  const used = new Set();
+  const slotOf = {};
+  const stable = shown.slice().sort((a, b) => (a.id < b.id ? -1 : 1));
+  for (const item of stable.filter((i) => preferred[i.id])) {
+    if (!used.has(preferred[item.id])) { slotOf[item.id] = preferred[item.id]; used.add(preferred[item.id]); }
+  }
+  for (const item of stable) {
+    if (slotOf[item.id]) continue;
+    let slot = 1;
+    while (used.has(slot) && slot < SLOTS) slot += 1;
+    slotOf[item.id] = slot;
+    used.add(slot);
+  }
+  const total = items.reduce((sum, i) => sum + i.amount, 0);
+  const slices = shown.map((item) => ({ ...item, slot: slotOf[item.id], color: `var(--series-${slotOf[item.id]})`, share: item.amount / total }));
+  if (rest.length) {
+    const amount = rest.reduce((sum, i) => sum + i.amount, 0);
+    slices.push({ ...OTHER, name: `Otras ${rest.length} categorías`, amount, share: amount / total, includes: rest.map((i) => i.name) });
+  }
+  return slices;
+}
+
+export function sharePercent(share) {
+  if (share > 0 && share < 0.001) return "<0,1 %";
+  return `${(share * 100).toFixed(share < 0.1 ? 1 : 0).replace(".", ",")} %`;
+}
+
+function pieLabelColor(slice) {
+  const dark = isDarkTheme();
+  if (slice.slot === 4 && !dark) return "#0b0b0b"; // el amarillo claro no admite texto blanco
+  if (slice.id === OTHER.id && !dark) return "#0b0b0b";
+  return "#ffffff";
+}
+
+function piePath(cx, cy, r, from, to) {
+  const point = (angle) => `${cx + r * Math.cos(angle)} ${cy + r * Math.sin(angle)}`;
+  return `M${cx} ${cy}L${point(from)}A${r} ${r} 0 ${to - from > Math.PI ? 1 : 0} 1 ${point(to)}Z`;
+}
+
+/** Gráfico de pastel con porcentaje en las porciones grandes y leyenda con nombre, importe y peso. */
+export function drawPie(el, width, { slices, format = eur, onClick = null }) {
+  el.replaceChildren();
+  const narrow = width < 430;
+  const size = Math.min(narrow ? width : width * 0.42, 232);
+  const center = size / 2;
+  const radius = center - 2;
+  const svg = s("svg", { viewBox: `0 0 ${size} ${size}`, width: size, height: size, role: "group", style: { width: `${size}px` } });
+  const percent = sharePercent;
+  const describe = (slice) => `${slice.name}: ${format(slice.amount)} (${percent(slice.share)})`;
+  const clickable = (slice) => onClick && slice.id !== OTHER.id;
+
+  let angle = -Math.PI / 2;
+  const labels = [];
+  for (const slice of slices) {
+    const sweep = slice.share * Math.PI * 2;
+    const attributes = {
+      class: "pie-slice", fill: slice.color, stroke: "var(--surface)", "stroke-width": 2, "stroke-linejoin": "round",
+      tabindex: 0, role: clickable(slice) ? "button" : "img", "aria-label": describe(slice),
+    };
+    const mark = slices.length === 1
+      ? s("circle", { ...attributes, cx: center, cy: center, r: radius })
+      : s("path", { ...attributes, d: piePath(center, center, radius, angle, angle + sweep) });
+    const tip = (x, y) => {
+      const rows = [{ color: slice.color, value: format(slice.amount), label: percent(slice.share) }];
+      if (slice.includes) rows.push({ value: "", label: slice.includes.join(", ") });
+      showTooltip(x, y, slice.name, rows);
+    };
+    mark.addEventListener("pointermove", (event) => tip(event.clientX, event.clientY));
+    mark.addEventListener("pointerleave", hideTooltip);
+    mark.addEventListener("focus", () => {
+      const box = mark.getBoundingClientRect();
+      tip(box.left + box.width / 2, box.top + box.height / 2);
+    });
+    mark.addEventListener("blur", hideTooltip);
+    if (clickable(slice)) {
+      mark.style.cursor = "pointer";
+      mark.addEventListener("click", () => onClick(slice));
+      mark.addEventListener("keydown", (event) => { if (event.key === "Enter") onClick(slice); });
+    }
+    svg.append(mark);
+    // Solo se rotula lo que cabe con holgura; el resto queda en la leyenda.
+    if (slice.share >= 0.07) {
+      const middle = angle + sweep / 2;
+      const distance = slices.length === 1 ? 0 : radius * 0.64;
+      labels.push(s("text", {
+        x: center + distance * Math.cos(middle), y: center + distance * Math.sin(middle) + 4, "text-anchor": "middle",
+        "pointer-events": "none", style: { fill: pieLabelColor(slice), fontWeight: 620, fontSize: "12px" },
+      }, percent(slice.share)));
+    }
+    angle += sweep;
+  }
+  svg.append(...labels);
+  const legendRows = slices.map((slice) => {
+    const content = [
+      h("i", { style: { background: slice.color } }),
+      h("span", { class: "pie-name", title: slice.includes ? slice.includes.join(", ") : null }, slice.name),
+      h("span", { class: "num small" }, eur0(slice.amount)),
+      h("span", { class: "num small faint" }, percent(slice.share)),
+    ];
+    return clickable(slice)
+      ? h("button", { type: "button", class: "pie-legend-row", title: `Ver movimientos de ${slice.name}`, onclick: () => onClick(slice) }, content)
+      : h("div", { class: "pie-legend-row" }, content);
+  });
+  el.append(h("div", { class: `pie${narrow ? " narrow" : ""}` }, svg, h("div", { class: "pie-legend" }, legendRows)));
 }
 
 /** Tarjeta con gráfico responsive y alternativa en tabla. draw(el, width) repinta al cambiar el ancho. */

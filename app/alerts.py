@@ -171,7 +171,11 @@ def _detect_new_merchants(txs: list[dict], settings: dict) -> list[Candidate]:
     if not txs:
         return []
     threshold = settings["new_merchant_eur"] * 100
-    grace_end = (date.fromisoformat(txs[0]["date"]) + timedelta(days=NEW_MERCHANT_GRACE_DAYS)).isoformat()
+    # Por cuenta: al añadir el extracto de otro banco, sus primeros meses también están llenos de nombres nuevos.
+    grace_end: dict[int, str] = {}
+    for t in txs:
+        grace_end.setdefault(
+            t["account_id"], (date.fromisoformat(t["date"]) + timedelta(days=NEW_MERCHANT_GRACE_DAYS)).isoformat())
     seen: set[str] = set()
     found = []
     for t in txs:
@@ -180,7 +184,7 @@ def _detect_new_merchants(txs: list[dict], settings: dict) -> list[Candidate]:
             continue
         seen.add(merchant)
         # Al principio del historial todos los comercios parecen nuevos.
-        if t["date"] < grace_end or t["kind"] == "transfer" or abs(t["amount_cents"]) < threshold:
+        if t["date"] < grace_end[t["account_id"]] or t["kind"] == "transfer" or abs(t["amount_cents"]) < threshold:
             continue
         incoming = t["amount_cents"] > 0
         found.append(Candidate(
@@ -193,10 +197,11 @@ def _detect_new_merchants(txs: list[dict], settings: dict) -> list[Candidate]:
     return found
 
 
-def _detect_recurring_changes(items: list[Recurring], anchor: date, settings: dict) -> list[Candidate]:
+def _detect_recurring_changes(items: list[Recurring], settings: dict) -> list[Candidate]:
     found = []
     pct = settings["price_increase_pct"] / 100
     for r in items:
+        anchor = date.fromisoformat(r.data_until)
         # Recorre el historial, no solo el último cargo: la alerta debe seguir ahí cuando llegue el recibo siguiente.
         if r.direction == "out" and r.active:
             for i in range(3, len(r.amounts)):
@@ -344,13 +349,12 @@ def compute(conn: sqlite3.Connection) -> list[Candidate]:
     if not txs:
         return []
     settings = get_settings(conn)
-    anchor = date.fromisoformat(txs[-1]["date"])
     return [
         *_detect_fees(txs),
         *_detect_duplicates(txs, settings),
         *_detect_outliers(txs, settings),
         *_detect_new_merchants(txs, settings),
-        *_detect_recurring_changes(detect_recurring(txs, anchor), anchor, settings),
+        *_detect_recurring_changes(detect_recurring(txs), settings),
         *_detect_balances(txs, settings),
         *_detect_foreign(txs),
         *_detect_budgets(conn, txs, settings),

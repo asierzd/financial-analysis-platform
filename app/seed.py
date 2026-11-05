@@ -4,7 +4,8 @@ from __future__ import annotations
 # (id, nombre, tipo, grupo). El grupo alimenta el análisis 50/30/20.
 CATEGORIES = [
     ("nomina", "Nómina", "income", "income"),
-    ("transfer_in", "Transferencias y Bizum recibidos", "income", "income"),
+    ("bizum_in", "Bizum recibidos", "income", "income"),
+    ("transfer_in", "Transferencias recibidas", "income", "income"),
     ("intereses", "Intereses y dividendos", "income", "income"),
     ("devoluciones", "Devoluciones y reembolsos", "income", "income"),
     ("otros_ingresos", "Otros ingresos", "income", "income"),
@@ -168,10 +169,11 @@ GENERIC = [
     ]),
     ("efectivo", "out", 55, [
         "Reintegro", "Retirada Efectivo", "Retirada Cajero", "Disposicion Efectivo", "Disposicion Cajero",
-        "Cajero", "Reintegro Cajero", "Efectivo Cajero",
+        "Cajero", "Reintegro Cajero", "Efectivo Cajero", "Retirada de Efectivo", "Disposicion en Cajero",
     ]),
+    ("bizum_in", "in", 31, ["Bizum"]),
     ("transfer_in", "in", 30, [
-        "Bizum", "Transferencia", "Transferencia Recibida", "Transf Recibida", "Transf", "Ingreso", "Ingreso Efectivo",
+        "Transferencia", "Transferencia Recibida", "Transf Recibida", "Transf", "Ingreso", "Ingreso Efectivo",
     ]),
     ("transfer_out", "out", 30, ["Bizum", "Transferencia", "Transferencia Realizada", "Transf", "Transf Emitida"]),
     ("recibos", "out", 5, ["Recibo", "Adeudo", "Domiciliacion", "Adeudo Directo"]),

@@ -1,10 +1,33 @@
-import { chartCard, drawColumns, drawLines } from "../charts.js";
+import { chartCard, drawColumns, drawLines, drawPie, pieSlices, sharePercent } from "../charts.js";
 import {
   api, bars, card, delta, emptyState, eur, eur0, fmtDate, fmtDayMonth, fmtMonthLong, h, link, pct, qs, statusChip, tile,
 } from "../ui.js";
 
 const INCOME = "var(--series-1)";
 const EXPENSE = "var(--series-2)";
+
+// Las categorías más habituales conservan siempre su color al cambiar de periodo.
+const EXPENSE_SLOTS = { vivienda: 1, supermercado: 2, recibos: 3, transporte: 4, restaurantes: 5, compras: 6, ocio: 7, seguros: 8 };
+const INCOME_SLOTS = { nomina: 1, bizum_in: 2, transfer_in: 3, intereses: 4, devoluciones: 5, otros_ingresos: 6 };
+
+function pieCard(title, items, slots, navigate, emptyText) {
+  const total = items.reduce((sum, i) => sum + i.amount, 0);
+  if (!items.length) return card(title, null, h("p", { class: "muted" }, emptyText));
+  const slices = pieSlices(items, slots);
+  return chartCard({
+    title,
+    subtitle: `Total: ${eur(total)}. Pulsa una porción para ver el detalle.`,
+    height: 232,
+    draw: (el, width) => drawPie(el, width, {
+      slices,
+      onClick: (slice) => navigate(`#/movimientos?category=${slice.id}`),
+    }),
+    table: {
+      columns: [{ label: "Categoría" }, { label: "Importe", right: true }, { label: "Peso", right: true }],
+      rows: items.map((i) => [i.name, eur(i.amount), sharePercent(i.share)]),
+    },
+  });
+}
 
 export function monthlyCard(monthly, navigate) {
   return chartCard({
@@ -52,7 +75,7 @@ export async function dashboardView({ filters, navigate }) {
   if (data.empty) {
     return h("div", null, h("section", { class: "card" }, emptyState(
       "Empieza importando tus movimientos",
-      "Descarga el Excel de movimientos de tu cuenta de BBVA y súbelo aquí. Los datos se quedan en tu ordenador.",
+      "Descarga el Excel de movimientos de tu cuenta de BBVA o Santander y súbelo aquí. Los datos se quedan en tu ordenador.",
       link("#/importar", h("button", { type: "button", class: "primary" }, "Importar movimientos")),
     )));
   }
@@ -77,6 +100,9 @@ export async function dashboardView({ filters, navigate }) {
     ),
     data.alerts.length ? alertsCard(data.alerts) : null,
     h("div", { class: "grid cols-2" }, monthlyCard(data.monthly, navigate), balanceCard(data.balance_series)),
+    h("div", { class: "grid cols-2" },
+      pieCard("Reparto de los gastos", data.categories, EXPENSE_SLOTS, navigate, "Sin gastos en este periodo."),
+      pieCard("Reparto de los ingresos", data.income_categories, INCOME_SLOTS, navigate, "Sin ingresos en este periodo.")),
     h("div", { class: "grid cols-2" },
       card("Gastos por categoría", "Pulsa una categoría para ver el detalle",
         data.categories.length

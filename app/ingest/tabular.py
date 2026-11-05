@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from ..categorize import normalize
-from .base import ParsedTx, Sheet
+from .base import BankParser, FormatError, ParsedTx, ParseResult, RawFile, Sheet
 
 HEADER_SCAN_ROWS = 40
 
@@ -19,13 +19,15 @@ SYNONYMS: dict[str, set[str]] = {
     "movement": {"MOVIMIENTO", "TIPO", "TIPO DE MOVIMIENTO", "CODIGO"},
     "notes": {"OBSERVACIONES", "BENEFICIARIO ORDENANTE", "ORDENANTE BENEFICIARIO", "MAS DATOS", "INFORMACION ADICIONAL",
               "CONCEPTO PROPIO", "CONCEPTO AMPLIADO"},
-    "amount": {"IMPORTE", "CANTIDAD", "IMPORTE EUR", "IMPORTE EUROS", "MONTO", "AMOUNT"},
+    "amount": {"IMPORTE", "CANTIDAD", "IMPORTE EUR", "IMPORTE EUROS", "IMPORTE E", "MONTO", "AMOUNT"},
     "debit": {"CARGO", "CARGOS", "DEBE"},
     "credit": {"ABONO", "ABONOS", "HABER"},
-    "balance": {"DISPONIBLE", "SALDO", "SALDO DISPONIBLE", "SALDO CONTABLE", "SALDO TRAS MOVIMIENTO", "BALANCE"},
+    "balance": {"DISPONIBLE", "SALDO", "SALDO EUR", "SALDO EUROS", "SALDO E", "SALDO DISPONIBLE", "SALDO CONTABLE",
+                "SALDO TRAS MOVIMIENTO", "BALANCE"},
     "currency": {"DIVISA", "MONEDA", "CURRENCY"},
 }
 
+_IBAN = re.compile(r"\bES\s?\d{2}(?:[\s-]?[\dX*•]{2,4}){3,6}\b")
 _DATE_FORMATS = ("%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%d/%m/%y", "%d-%m-%y", "%d.%m.%y", "%Y-%m-%d", "%Y/%m/%d",
                  "%Y-%m-%d %H:%M:%S", "%d/%m/%Y %H:%M:%S", "%Y-%m-%dT%H:%M:%S")
 _CURRENCY = re.compile(r"(?i)eur(os?)?|€|\s| |\+")
@@ -186,3 +188,38 @@ def rows_to_transactions(rows: list[list], mapping: ColumnMap) -> tuple[list[Par
         sample = ", ".join(str(n) for n in unreadable[:5])
         warnings.append(f"{len(unreadable)} filas con la fecha o el importe ilegibles se han omitido (nº {sample}…).")
     return transactions, warnings
+
+
+def find_iban(rows: list[list]) -> str | None:
+    for row in rows:
+        for cell in row:
+            match = _IBAN.search(str(cell).upper()) if cell is not None else None
+            if match:
+                return re.sub(r"[\s-]", "", match.group(0))
+    return None
+
+
+def iban_entity(iban: str | None) -> str | None:
+    """Código de entidad del IBAN español (0182 BBVA, 0049 Santander), si no viene enmascarado."""
+    return iban[4:8] if iban and iban[4:8].isdigit() else None
+
+
+def above_header_words(rows: list[list], header_index: int, filename: str) -> set[str]:
+    """Palabras de los títulos y del nombre del fichero. No mira los movimientos: un concepto puede citar a otro banco."""
+    above = " ".join(str(c) for row in rows[:header_index] for c in row if c is not None)
+    return set(normalize(f"{above} {filename}").split())
+
+
+class TableBankParser(BankParser):
+    """Banco cuyo extracto es una tabla con títulos de columna. Cada banco solo aporta cómo reconocerse."""
+
+    def parse(self, raw: RawFile) -> ParseResult:
+        for sheet in raw.sheets:
+            found = find_header(sheet)
+            if not found:
+                continue
+            header_index, mapping = found
+            transactions, warnings = rows_to_transactions(sheet.rows[header_index + 1:], mapping)
+            if transactions:
+                return ParseResult(self.id, self.bank, transactions, warnings, find_iban(sheet.rows[:header_index]))
+        raise FormatError(f"He encontrado la cabecera de {self.bank}, pero ningún movimiento debajo.")

@@ -167,10 +167,8 @@ def merchant_breakdown(txs: list[dict], limit: int | None = 10) -> list[dict]:
     return ranked[:limit] if limit else ranked
 
 
-def recurring_list(txs_all: list[dict], anchor: str | None) -> list[dict]:
-    if not anchor:
-        return []
-    return [asdict(r) for r in detect_recurring(txs_all, date.fromisoformat(anchor))]
+def recurring_list(txs_all: list[dict]) -> list[dict]:
+    return [asdict(r) for r in detect_recurring(txs_all)]
 
 
 def dashboard(conn: sqlite3.Connection, start: str | None, end: str | None, account_id: int | None) -> dict:
@@ -184,7 +182,7 @@ def dashboard(conn: sqlite3.Connection, start: str | None, end: str | None, acco
     prev_start, prev_end = previous_range(start, end)
     has_previous = prev_end >= first
     previous = totals(in_range(txs_all, prev_start, prev_end)) if has_previous else None
-    upcoming = [r for r in recurring_list(txs_all, last) if r["active"] and r["next_date"] > last]
+    upcoming = [r for r in recurring_list(txs_all) if r["active"] and r["next_date"] > r["data_until"]]
     upcoming.sort(key=lambda r: r["next_date"])
     alerts_sql = "SELECT * FROM alerts WHERE active=1 AND status='new'"
     alerts_params: list = []
@@ -331,7 +329,7 @@ def analysis(conn: sqlite3.Connection, start: str | None, end: str | None, accou
         net = sum(w["net"] for w in window)
         rolling.append({"month": row["month"], "savings_rate": net / income if income > 0 else None})
 
-    recurring = recurring_list(txs_all, data_last)
+    recurring = recurring_list(txs_all)
     active_out = [r for r in recurring if r["active"] and r["direction"] == "out"]
     active_in = [r for r in recurring if r["active"] and r["direction"] == "in"]
     fixed_monthly = sum(r["annual_cents"] for r in active_out) / 12

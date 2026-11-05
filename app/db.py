@@ -111,15 +111,18 @@ def connect(path: Path | str | None = None) -> sqlite3.Connection:
 
 
 def init_db(conn: sqlite3.Connection) -> None:
-    """Crea el esquema y añade categorías/reglas/ajustes nuevos sin pisar lo que haya editado el usuario."""
+    """Crea el esquema y actualiza categorías y reglas del sistema. No toca reglas propias, ajustes ni
+    qué reglas del sistema ha desactivado el usuario."""
     conn.executescript(f"BEGIN;{SCHEMA}COMMIT;")
     conn.executemany(
-        "INSERT OR IGNORE INTO categories (id, name, kind, grp, is_system) VALUES (?,?,?,?,1)",
+        "INSERT INTO categories (id, name, kind, grp, is_system) VALUES (?,?,?,?,1) "
+        "ON CONFLICT(id) DO UPDATE SET name=excluded.name, kind=excluded.kind, grp=excluded.grp",
         CATEGORIES,
     )
     conn.executemany(
-        "INSERT OR IGNORE INTO rules (pattern, category_id, sign, priority, source, label) "
-        "VALUES (?,?,?,?,'system',?)",
+        "INSERT INTO rules (pattern, category_id, sign, priority, source, label) VALUES (?,?,?,?,'system',?) "
+        "ON CONFLICT(pattern, sign, source) DO UPDATE SET "
+        "category_id=excluded.category_id, priority=excluded.priority, label=excluded.label",
         list(iter_system_rules()),
     )
     conn.executemany(

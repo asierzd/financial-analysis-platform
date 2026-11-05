@@ -22,6 +22,9 @@ def normalize(text: str | None) -> str:
 
 # Prefijos que describen la operación, no al comercio.
 _PREFIXES = [
+    "PAGO MOVIL EN", "COMPRA INTERNET EN", "COMPRA INTERNET", "TRANSACCION CONTACTLESS EN", "TRANSACCION CONTACTLESS",
+    "TRANSFERENCIA INMEDIATA A FAVOR DE", "TRANSFERENCIA INMEDIATA DE", "TRANSFERENCIA INMEDIATA A",
+    "TRANSFERENCIA INMEDIATA", "DISPOSICION EN CAJERO", "DISPOSICION EFECTIVO",
     "PAGO CON TARJETA DE CREDITO", "PAGO CON TARJETA DE DEBITO", "PAGO CON TARJETA EN", "PAGO CON TARJETA",
     "PAGO CON MOVIL", "PAGO MOVIL", "PAGO EN", "COMPRA TARJETA", "COMPRA TARJ", "COMPRA CON TARJETA", "COMPRA EN",
     "COMPRA", "ADEUDO DIRECTO", "ADEUDO RECIBO", "ADEUDO DE", "ADEUDO", "RECIBO DE", "RECIBO", "CARGO POR", "CARGO DE",
@@ -31,6 +34,8 @@ _PREFIXES = [
     "BIZUM ENVIADO", "BIZUM RECIBIDO", "ABONO DE", "ABONO", "SEPA", "TARJETA", "TARJ",
 ]
 _PREFIXES.sort(key=len, reverse=True)
+# Lo que sigue a estas palabras describe la operación, no a quién paga o cobra.
+_TRAILING_DETAIL = re.compile(r"\b(?:CONCEPTO|TARJ|TARJETA|REF|REFERENCIA|MANDATO|NO RECIBO)\b.*$")
 _LEGAL = {"SA", "SL", "SAU", "SLU", "SLL", "SCP", "SCCL", "CB", "SOCIEDAD", "ANONIMA", "LIMITADA", "ESPANA", "SPAIN", "EU", "ES", "COM"}
 _ARTICLES = {"LA", "EL", "LOS", "LAS", "DE", "DEL", "THE"}
 _NOISE = re.compile(r"^(?:\d+|X{2,}|[A-Z]?\d{3,}[A-Z0-9]*|[0-9X]{4,}|REF|REFERENCIA|NUM|N)$")
@@ -54,7 +59,8 @@ def _strip_prefix(text: str) -> str:
 def clean_merchant(concept: str, movement: str = "", notes: str = "") -> str:
     """Saca un nombre estable de comercio/pagador. Se queda con dos palabras significativas."""
     for source in (concept, notes, movement):
-        text = _strip_prefix(normalize(source))
+        # Hasta la primera coma: "TIENDA X, MADRID, Tarj." y "TIENDA X, BILBAO" son el mismo comercio.
+        text = _TRAILING_DETAIL.sub("", _strip_prefix(normalize((source or "").split(",")[0])))
         tokens = [t for t in text.split() if t not in _LEGAL and not _NOISE.match(t)]
         if not tokens:
             continue

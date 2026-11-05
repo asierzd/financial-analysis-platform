@@ -36,7 +36,8 @@ _ALLOWED_HOSTS = [h.strip() for h in os.environ.get("ALLOWED_HOSTS", "localhost,
 async def lifespan(_: FastAPI):
     with closing(connect()) as conn:
         init_db(conn)
-        alerts_engine.refresh_alerts(conn)
+        reclassify_all(conn)  # aplica a los movimientos ya importados las reglas nuevas de esta versión
+        _after_data_change(conn)
     yield
 
 
@@ -538,11 +539,24 @@ def _account_by_iban(conn: sqlite3.Connection, iban: str | None) -> int | None:
     return row["id"] if row else None
 
 
+def _suggest_account(conn: sqlite3.Connection, result) -> int | None:
+    """Cuenta propuesta al importar. Sin una coincidencia clara propone una cuenta nueva: mezclar dos
+    cuentas por error es mucho peor que tener que elegir la correcta en el desplegable."""
+    by_iban = _account_by_iban(conn, result.account_hint)
+    if by_iban or result.parser_id == "manual":
+        return by_iban
+    same_bank = conn.execute("SELECT id, iban FROM accounts WHERE bank=?", (result.bank,)).fetchall()
+    if len(same_bank) == 1 and (not result.account_hint or not same_bank[0]["iban"]):
+        return same_bank[0]["id"]
+    return None
+
+
 @app.post("/api/import/preview")
 async def import_preview(
     file: UploadFile = File(...),
     mapping: str | None = Form(None),
     account_id: int | None = Form(None),
+    new_account: bool = Form(False),
     conn: sqlite3.Connection = DB,
 ) -> dict:
     data = await _read_upload(file)
@@ -552,7 +566,7 @@ async def import_preview(
         raise HTTPException(422, str(exc)) from exc
     if result is None:
         return {"status": "needs_mapping", "raw": ingest.raw_preview(raw)}
-    target = account_id or _account_by_iban(conn, result.account_hint)
+    target = None if new_account else account_id or _suggest_account(conn, result)
     return {"status": "ok", "preview": ingest.preview(conn, result, target), "account_id": target}
 
 

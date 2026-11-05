@@ -17,7 +17,7 @@ FREQUENCIES = [
 _MIN_OCCURRENCES = {"Anual": 2, "Semestral": 2, "Trimestral": 3}
 _HISTORY = 12
 # Con dos apariciones al año, las vacaciones de agosto parecerían un cargo anual fijo.
-_DISCRETIONARY = {"viajes", "compras", "ocio", "restaurantes", "supermercado", "hogar", "transfer_in", "transfer_out"}
+_DISCRETIONARY = {"viajes", "compras", "ocio", "restaurantes", "supermercado", "hogar", "transfer_in", "bizum_in", "transfer_out"}
 _INFREQUENT = {"Semestral", "Anual"}
 
 
@@ -43,12 +43,19 @@ class Recurring:
     dates: list[str]
     tx_ids: list[int]
     account_id: int
+    data_until: str  # último movimiento importado de su cuenta
 
 
-def detect_recurring(txs: list[dict], anchor: date) -> list[Recurring]:
-    """txs: movimientos en orden cronológico. Excluye traspasos internos y retiradas de efectivo."""
+def detect_recurring(txs: list[dict]) -> list[Recurring]:
+    """txs: movimientos en orden cronológico. Excluye traspasos internos y retiradas de efectivo.
+
+    Lo que falta se mide contra el último dato de cada cuenta: si un extracto llega hasta septiembre y el de
+    otro banco hasta octubre, los recibos del primero no han dejado de cobrarse, solo no se han importado aún.
+    """
     groups: dict[tuple, list[dict]] = {}
+    data_until: dict[int, str] = {}
     for tx in txs:
+        data_until[tx["account_id"]] = tx["date"]
         if tx["kind"] == "transfer" or tx["category_id"] == "efectivo" or tx["amount_cents"] == 0:
             continue
         direction = "in" if tx["amount_cents"] > 0 else "out"
@@ -79,7 +86,7 @@ def detect_recurring(txs: list[dict], anchor: date) -> list[Recurring]:
         if variation > max_variation:
             continue
         last_day = days[-1]
-        active = (anchor - last_day).days <= period * 1.5 + 7
+        active = (date.fromisoformat(data_until[account_id]) - last_day).days <= period * 1.5 + 7
         step = timedelta(days=round(period))
         next_day = last_day + step
         found.append(Recurring(
@@ -103,6 +110,7 @@ def detect_recurring(txs: list[dict], anchor: date) -> list[Recurring]:
             dates=[t["date"] for t in recent],
             tx_ids=[t["id"] for t in recent],
             account_id=account_id,
+            data_until=data_until[account_id],
         ))
     found.sort(key=lambda r: -r.annual_cents)
     return found
