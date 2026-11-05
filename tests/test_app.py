@@ -5,6 +5,7 @@ import json
 import sqlite3
 import sys
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -482,6 +483,294 @@ def test_invalid_transfer_decisions_are_refused(client):
     assert client.post("/api/transfers/decide", json=bad).status_code == 422  # importes distintos
     bad["pairs"][0]["in_id"] = 99999
     assert client.post("/api/transfers/decide", json=bad).status_code == 422
+
+
+# ---- Trade Republic
+
+TR_HEADER = ["datetime", "date", "account_type", "category", "type", "asset_class", "name", "symbol", "shares", "price", "amount", "fee", "tax",
+             "currency", "original_amount", "original_currency", "fx_rate", "description", "transaction_id", "counterparty_name",
+             "counterparty_iban", "payment_reference", "mcc_code"]
+_tr_counter = [0]
+
+
+def tr(day, category, kind, asset="", name="", symbol="", shares="", price="", amount="", fee="", tax="", description="", tx_id=None, mcc="", counterparty=""):
+    _tr_counter[0] += 1
+    return [f"{day}T10:00:{_tr_counter[0] % 60:02d}.123Z", day, "DEFAULT", category, kind, asset, name, symbol, shares, price, amount, fee, tax, "EUR",
+            "", "", "", description, tx_id or f"id-{_tr_counter[0]}", counterparty, "", "", mcc]
+
+
+def tr_csv(rows, delimiter=","):
+    import csv as _csv
+
+    buffer = io.StringIO()
+    writer = _csv.writer(buffer, delimiter=delimiter, quoting=_csv.QUOTE_ALL)
+    writer.writerow(TR_HEADER)
+    writer.writerows(rows)
+    return buffer.getvalue().encode()
+
+
+def tr_upload(client, rows, **kw):
+    return upload(client, tr_csv(rows), name="export.csv", **kw)
+
+
+DEPOSIT = lambda day="2026-01-01", amount="1000.000000": tr(day, "CASH", "TRANSFER_INSTANT_INBOUND", name="Yo", amount=amount, description="Instant transfer received", counterparty="Yo")
+WORLD = dict(asset="FUND", name="MSCI World", symbol="IE00B4L5Y983")
+
+
+def fifo_rows():
+    return [
+        DEPOSIT(),
+        tr("2026-01-02", "TRADING", "BUY", **WORLD, shares="10.0000000000", price="10.0000000000", amount="-100.00", fee="-1.00", description="Buy order"),
+        tr("2026-02-02", "TRADING", "BUY", **WORLD, shares="10.0000000000", price="20.0000000000", amount="-200.00", description="Savings plan execution"),
+        tr("2026-03-02", "TRADING", "SELL", **WORLD, shares="-15.0000000000", price="30.0000000000", amount="450.00", fee="-1.00", description="Sell order"),
+    ]
+
+
+def test_trade_republic_detected_by_columns_not_filename():
+    raw = read_file(tr_csv(fifo_rows()), "cualquier_nombre.csv")
+    assert detect_parser(raw).id == "traderepublic"
+
+
+def test_trade_republic_detected_after_excel_resave_with_semicolons_and_decimal_commas(client):
+    rows = [DEPOSIT(amount="1000,50"), tr("2026-01-02", "TRADING", "BUY", **WORLD, shares="1,5", price="10", amount="-15,00")]
+    raw = read_file(tr_csv(rows, delimiter=";"), "e.csv")
+    result = detect_parser(raw).parse(raw)
+    assert [t.amount_cents for t in result.transactions] == [100050, -1500]
+    assert result.events[0].shares == Decimal("1.5")
+
+
+def test_fifo_cost_gain_and_cash_on_known_numbers(client):
+    tr_upload(client, fifo_rows())
+    data = client.get("/api/investments").json()
+    position = data["positions"][0]
+    # Vende 15: 10 a coste 101 (con comisión) + 5 a coste 100 = 201. Cobra 450 - 1 = 449. Ganancia 248.
+    assert data["by_year"][0]["realized"] == 24800
+    assert position["shares"] == 5 and position["cost"] == 10000
+    # Quedan 5 títulos a 20 de coste; el último precio es 30.
+    assert position["value"] == 15000 and position["unrealized"] == 5000 and position["price_source"] == "operation"
+    assert data["summary"]["order_fees"] == 200
+    assert data["cash"] == {"balance": 114800, "complete": True, "as_of": "2026-03-02"}  # 1000 - 101 - 200 + 449
+    assert data["summary"]["savings_plan_buys"] == 1
+
+
+def test_buying_and_selling_are_neither_expense_nor_income(client):
+    tr_upload(client, fifo_rows())
+    totals = client.get("/api/dashboard").json()["totals"]
+    # Lo único que cuenta: el ingreso inicial y las dos comisiones.
+    assert totals["income"] == 100000 and totals["expense"] == 200
+    fee = client.get("/api/transactions", params={"category": "comisiones"}).json()
+    assert fee["total"] == 2
+
+
+def test_order_fee_does_not_alert_but_card_fee_does(client):
+    rows = fifo_rows() + [tr("2026-03-05", "CASH", "CARD_ORDERING_FEE", name="Trade Republic Card", amount="0.000000", fee="-5.00", description="Trade Republic Card")]
+    tr_upload(client, rows)
+    fees = client.get("/api/alerts", params={"type": "fee"}).json()["items"]
+    assert [a["amount_cents"] for a in fees] == [-500]
+
+
+def test_interest_and_dividend_are_gross_income_with_separate_withholding(client):
+    tr_upload(client, [
+        DEPOSIT(),
+        tr("2026-01-02", "TRADING", "BUY", asset="STOCK", name="ACME", symbol="US0000000001", shares="10", price="10", amount="-100.00"),
+        tr("2026-02-01", "CASH", "INTEREST_PAYMENT", amount="2.000000", tax="-0.380000", description="Interest payment"),
+        tr("2026-02-02", "CASH", "DIVIDEND", asset="STOCK", name="ACME", symbol="US0000000001", shares="10", amount="5.000000", tax="-0.750000", description="Cash Dividend"),
+        tr("2026-02-03", "CASH", "BENEFITS_SAVEBACK", amount="3.000000", tax="-0.570000", description="Saveback"),
+    ])
+    income = {c["id"]: c["amount"] for c in client.get("/api/dashboard").json()["income_categories"]}
+    assert income == {"transfer_in": 100000, "intereses": 700, "saveback": 300}
+    data = client.get("/api/investments").json()
+    assert data["summary"]["interest"] == 200 and data["summary"]["dividends"] == 500 and data["summary"]["withholding"] == 170
+    assert data["cash"]["balance"] == 100000 - 10000 + 200 - 38 + 500 - 75 + 300 - 57
+    assert data["positions"][0]["dividends"] == 500
+
+
+def test_card_uses_rules_first_then_merchant_code(client):
+    tr_upload(client, [
+        DEPOSIT(),
+        tr("2026-01-03", "CASH", "CARD_TRANSACTION", name="Mercadona", amount="-10.000000", mcc="5812"),
+        tr("2026-01-04", "CASH", "CARD_TRANSACTION", name="Casa Pepe", amount="-20.000000", mcc="5812"),
+        tr("2026-01-05", "CASH", "CARD_TRANSACTION", name="Cosa Rara", amount="-30.000000", mcc="1234"),
+        tr("2026-01-06", "CASH", "CARD_TRANSACTION", name="Hotel Sol", amount="52.400000", mcc="7011", description="refund"),
+        tr("2026-01-07", "CASH", "TRANSFER_DIRECT_DEBIT_INBOUND", amount="-12.990000", description="Sepa Direct Debit transfer to SPOTIFY AB"),
+    ])
+    items = {t["concept"]: t for t in client.get("/api/transactions").json()["items"]}
+    assert items["Mercadona"]["category_id"] == "supermercado"
+    assert items["Casa Pepe"]["category_id"] == "restaurantes"
+    assert items["Cosa Rara"]["category_id"] == "sin_clasificar"
+    assert items["SPOTIFY AB"]["category_id"] == "suscripciones" and items["SPOTIFY AB"]["amount_cents"] == -1299
+
+
+def test_bank_given_category_survives_a_rule_and_reclassification(client):
+    tr_upload(client, fifo_rows())
+    client.post("/api/rules", json={"pattern": "MSCI World", "category_id": "ocio"})
+    assert client.get("/api/transactions", params={"category": "inversiones"}).json()["total"] == 3
+
+
+def test_reimport_dedupes_by_transaction_id_even_with_different_window(client):
+    rows = fifo_rows()
+    first = tr_upload(client, rows[:2]).json()
+    assert first["new"] == 3  # depósito, compra y su comisión
+    second = tr_upload(client, rows, account_id=first["account_id"]).json()
+    assert second["new"] == 3 and second["skipped"] == 3
+    assert client.get("/api/investments").json()["cash"]["balance"] == 114800
+    assert len(client.get("/api/meta").json()["accounts"]) == 1
+    data = client.get("/api/investments").json()
+    assert data["positions"][0]["shares"] == 5
+
+
+def test_partial_history_refuses_to_invent_a_cash_balance(client):
+    rows = [tr("2026-01-02", "TRADING", "BUY", **WORLD, shares="10", price="10", amount="-100.00")]
+    preview = upload(client, tr_csv(rows), name="e.csv", path="/api/import/preview").json()["preview"]
+    assert any("apertura" in w for w in preview["warnings"])
+    account = tr_upload(client, rows).json()["account_id"]
+    data = client.get("/api/investments").json()
+    assert data["cash"]["complete"] is False and data["cash"]["balance"] is None
+    assert any("apertura" in w for w in data["warnings"])
+    assert client.get("/api/dashboard").json()["balance"] is None
+    # Importar después el principio completa el historial.
+    # La interfaz propone la cuenta existente del mismo banco.
+    assert upload(client, tr_csv([DEPOSIT()]), name="e.csv", path="/api/import/preview").json()["account_id"] == account
+    tr_upload(client, [DEPOSIT()], account_id=account)
+    assert client.get("/api/investments").json()["cash"]["balance"] == 90000
+
+
+def test_invested_cash_is_not_a_low_or_negative_balance_alert(client):
+    tr_upload(client, [DEPOSIT(amount="100.000000"), tr("2026-01-02", "TRADING", "BUY", **WORLD, shares="1", price="99", amount="-99.00")])
+    kinds = alert_types(client)
+    assert "low_balance" not in kinds and "negative_balance" not in kinds and "balance_gap" not in kinds
+
+
+def test_staking_reward_adds_shares_without_moving_cash(client):
+    eth = dict(asset="CRYPTO", name="Ethereum", symbol="XF000ETH0019")
+    tr_upload(client, [DEPOSIT(), tr("2026-01-19", "DELIVERY", "FREE_RECEIPT", **eth, shares="0.5", price="2000", description="Staking")])
+    data = client.get("/api/investments").json()
+    position = data["positions"][0]
+    assert position["shares"] == 0.5 and position["reward_shares"] == 0.5 and position["cost"] == 100000
+    assert data["cash"]["balance"] == 100000
+    assert client.get("/api/dashboard").json()["totals"]["income"] == 100000
+
+
+def test_migration_pair_keeps_original_cost_and_realizes_nothing(client):
+    stock = dict(asset="STOCK", name="Santander", symbol="ES0113900J37")
+    tr_upload(client, [
+        DEPOSIT(),
+        tr("2026-01-02", "TRADING", "BUY", **stock, shares="10", price="5", amount="-50.00"),
+        tr("2026-06-01", "DELIVERY", "MIGRATION", **stock, shares="-10", price="12"),
+        tr("2026-06-01", "DELIVERY", "MIGRATION", **stock, shares="10", price="12"),
+    ])
+    data = client.get("/api/investments").json()
+    assert data["positions"][0]["cost"] == 5000 and data["positions"][0]["shares"] == 10
+    assert data["summary"]["realized"] == 0 and data["warnings"] == []
+
+
+def test_cancelled_buy_reverses_position_without_gain(client):
+    tr_upload(client, [
+        DEPOSIT(),
+        tr("2026-01-02", "TRADING", "BUY", **WORLD, shares="1", price="10", amount="-10.00"),
+        tr("2026-01-02", "TRADING", "BUY", **WORLD, shares="2", price="20", amount="-40.00"),
+        tr("2026-01-03", "TRADING", "BUY_CANCELLED", **WORLD, shares="-2", price="20", amount="40.00"),
+    ])
+    data = client.get("/api/investments").json()
+    assert data["positions"][0]["shares"] == 1 and data["positions"][0]["cost"] == 1000 and data["summary"]["realized"] == 0
+
+
+def test_oversold_and_corporate_actions_warn_instead_of_guessing(client):
+    tr_upload(client, [
+        DEPOSIT(),
+        tr("2026-01-02", "TRADING", "SELL", **WORLD, shares="-1", price="10", amount="10.00"),
+        tr("2026-01-03", "CORPORATE_ACTION", "LIQUIDATION_PROCEEDS", asset="FUND", name="Fondo Cerrado", symbol="IE00EXAMPLE99", shares="2", price="1", amount="2.00"),
+    ])
+    warnings = " ".join(client.get("/api/investments").json()["warnings"])
+    assert "más títulos" in warnings and "corporativas" in warnings
+    preview = upload(client, tr_csv([tr("2026-01-03", "CORPORATE_ACTION", "RARE_THING", asset="FUND", name="X", symbol="IE0", amount="2.00")]),
+                     name="e.csv", path="/api/import/preview").json()["preview"]
+    assert any("RARE_THING" in w for w in preview["warnings"])
+
+
+def test_manual_price_values_position_and_can_be_removed(client):
+    tr_upload(client, fifo_rows())
+    client.put("/api/investments/prices/IE00B4L5Y983", json={"price_eur": 40, "as_of": "2026-11-01"})
+    position = client.get("/api/investments").json()["positions"][0]
+    assert position["value"] == 20000 and position["unrealized"] == 10000 and position["price_source"] == "manual"
+    client.delete("/api/investments/prices/IE00B4L5Y983")
+    assert client.get("/api/investments").json()["positions"][0]["value"] == 15000
+    assert client.put("/api/investments/prices/NOEXISTE", json={"price_eur": 1}).status_code == 404
+
+
+def test_investments_follow_account_selection_and_import_undo(client):
+    bbva = upload(client, bbva_xlsx([row("2026-01-02", "MERCADONA", -10.0, 90.0)])).json()["account_id"]
+    done = tr_upload(client, fifo_rows()).json()
+    assert client.get("/api/investments", params={"accounts": bbva}).json()["empty"] is True
+    assert client.get("/api/investments", params={"accounts": done["account_id"]}).json()["empty"] is False
+    assert client.get("/api/dashboard").json()["investments_value"] == 15000
+    assert client.get("/api/dashboard", params={"accounts": bbva}).json()["investments_value"] is None
+    client.delete(f"/api/imports/{done['import_id']}")
+    assert client.get("/api/investments").json()["empty"] is True
+
+
+def test_bank_transfer_to_trade_republic_is_proposed_as_own_transfer(client):
+    upload(client, bbva_xlsx([row("2026-01-01", "Transferencia a favor de Trade Republic Bank", -1000.0, 500.0)]), account_name="BBVA")
+    tr_upload(client, [DEPOSIT()])
+    pairs = client.get("/api/transfers").json()["pending"]
+    assert [p["amount_cents"] for p in pairs] == [100000]
+    upload(client, bbva_xlsx([row("2026-05-01", "Transferencia recibida de Trade Republic", 200.0, 700.0)]), account_name="BBVA")
+    tr_upload(client, [tr("2026-05-01", "CASH", "TRANSFER_INSTANT_OUTBOUND", name="Yo", amount="-200.000000", counterparty="Yo")])
+    assert {p["amount_cents"] for p in client.get("/api/transfers").json()["pending"]} == {100000, 20000}
+
+
+def test_withholdings_and_order_fees_are_not_recurring_charges(client):
+    rows = [DEPOSIT()]
+    for month in range(1, 8):
+        rows.append(tr(f"2026-{month:02d}-02", "TRADING", "BUY", **WORLD, shares="1", price="10", amount="-10.00", fee="-1.00"))
+        rows.append(tr(f"2026-{month:02d}-03", "CASH", "INTEREST_PAYMENT", amount="2.000000", tax="-0.380000"))
+        rows.append(tr(f"2026-{month:02d}-08", "CASH", "TRANSFER_DIRECT_DEBIT_INBOUND", amount="-12.990000", description="Sepa Direct Debit transfer to SPOTIFY AB"))
+    tr_upload(client, rows)
+    assert [r["merchant"] for r in client.get("/api/analysis").json()["recurring"]["out"]] == ["Spotify"]
+
+
+def test_xirr_on_known_flows():
+    from app.investments import xirr
+
+    assert xirr([("2025-01-01", -100.0), ("2026-01-01", 110.0)]) == pytest.approx(0.1, abs=0.001)
+    assert xirr([("2025-01-01", -100.0)]) is None
+    assert xirr([("2025-01-01", -100.0), ("2025-01-10", 110.0)]) is None  # demasiado corto para anualizar
+
+
+def test_trade_republic_sample_is_consistent(client, tmp_path):
+    sys.path.insert(0, str(ROOT / "samples"))
+    import generar_ejemplo_traderepublic
+
+    path = generar_ejemplo_traderepublic.write(tmp_path / "tr.csv")
+    preview = upload(client, path.read_bytes(), name="tr.csv", path="/api/import/preview").json()["preview"]
+    assert preview["bank"] == "Trade Republic" and preview["positions"] == 4
+    upload(client, path.read_bytes(), name="tr.csv")
+    data = client.get("/api/investments").json()
+    assert data["cash"]["complete"] is True and data["cash"]["balance"] > 0
+    assert data["summary"]["annual_return"] is not None and data["summary"]["realized"] > 0
+    assert {a["id"] for a in data["allocation"]} == {"FUND", "STOCK", "CRYPTO"}
+    # Lo que entra en la cartera más el efectivo debe cuadrar con el dinero real de las filas del CSV.
+    import csv as _csv
+
+    rows = list(_csv.DictReader(io.StringIO(path.read_text())))
+    expected = sum(Decimal(r["amount"] or 0) + Decimal(r["fee"] or 0) + Decimal(r["tax"] or 0) for r in rows)
+    assert data["cash"]["balance"] == pytest.approx(int(expected * 100), abs=len(rows))
+
+
+def test_upgrade_adds_new_columns_to_an_older_database(client, tmp_path):
+    upload(client, bbva_xlsx([row("2026-01-02", "MERCADONA", -10.0, 90.0)]))
+    conn = connect(tmp_path / "finanzas.db")
+    for column in ("occurred_at", "fixed_category", "fallback_category"):
+        conn.execute(f"ALTER TABLE transactions DROP COLUMN {column}")
+    conn.execute("ALTER TABLE accounts DROP COLUMN balance_computed")
+    conn.commit()
+    conn.close()
+    import app.main as main
+
+    with TestClient(main.app) as fresh:
+        assert fresh.get("/api/meta").json()["count"] == 1
+        assert tr_upload(fresh, fifo_rows()).status_code == 200
+        assert fresh.get("/api/investments").json()["positions"][0]["shares"] == 5
 
 
 # ---- actualización de una base de datos existente

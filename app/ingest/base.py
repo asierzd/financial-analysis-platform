@@ -8,6 +8,13 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import date
+from decimal import Decimal
+
+
+# Movimientos automáticos de un bróker: esperados, no deben avisar como una comisión o un cargo sorpresa.
+MOV_ORDER_FEE = "Comisión de operación"
+MOV_WITHHOLDING = "Retención"
+MOV_INTEREST = "Intereses remunerados"
 
 
 @dataclass
@@ -20,6 +27,28 @@ class ParsedTx:
     value_date: date | None = None
     balance_cents: int | None = None
     currency: str = "EUR"
+    external_id: str | None = None  # identificador del banco: deduplica mejor que comparar campos
+    occurred_at: str | None = None  # fecha y hora, para ordenar dentro de un mismo día
+    fixed_category: str | None = None  # el banco dice qué es: ninguna regla debe cambiarlo
+    fallback_category: str | None = None  # pista del banco: se usa si ninguna regla reconoce el texto
+
+
+@dataclass
+class ParsedEvent:
+    """Operación sobre un valor: da forma a las posiciones, aunque no mueva dinero (una recompensa, por ejemplo)."""
+    external_id: str
+    date: date
+    kind: str  # buy, sell, cancel, dividend, reward, delivery, corporate
+    isin: str
+    name: str = ""
+    asset_class: str = ""
+    shares: Decimal | None = None
+    price: Decimal | None = None
+    amount_cents: int = 0
+    fee_cents: int = 0
+    tax_cents: int = 0
+    notes: str = ""
+    occurred_at: str | None = None
 
 
 @dataclass
@@ -41,6 +70,8 @@ class ParseResult:
     transactions: list[ParsedTx]
     warnings: list[str] = field(default_factory=list)
     account_hint: str | None = None
+    events: list[ParsedEvent] = field(default_factory=list)
+    computed_balance: bool = False  # el extracto no trae saldo: se calcula sumando movimientos
 
 
 class FormatError(ValueError):

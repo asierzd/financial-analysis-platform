@@ -95,11 +95,50 @@ CREATE TABLE IF NOT EXISTS transfer_decisions (
     status TEXT NOT NULL CHECK (status IN ('confirmed','rejected')),
     decided_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS investment_events (
+    id INTEGER PRIMARY KEY,
+    fingerprint TEXT NOT NULL UNIQUE,
+    account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    import_id INTEGER NOT NULL REFERENCES imports(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,
+    occurred_at TEXT,
+    kind TEXT NOT NULL,
+    isin TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    asset_class TEXT NOT NULL DEFAULT '',
+    shares TEXT,
+    price TEXT,
+    amount_cents INTEGER NOT NULL DEFAULT 0,
+    fee_cents INTEGER NOT NULL DEFAULT 0,
+    tax_cents INTEGER NOT NULL DEFAULT 0,
+    notes TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS ix_inv_isin ON investment_events(isin);
+CREATE TABLE IF NOT EXISTS investment_prices (
+    isin TEXT PRIMARY KEY,
+    price TEXT NOT NULL,
+    as_of TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
 """
+
+
+# Columnas añadidas después de la primera versión. CREATE TABLE no toca las tablas que ya existen.
+ADDED_COLUMNS = {
+    "transactions": {"occurred_at": "TEXT", "fixed_category": "TEXT", "fallback_category": "TEXT"},
+    "accounts": {"balance_computed": "INTEGER NOT NULL DEFAULT 0"},
+}
+
+
+def _add_missing_columns(conn: sqlite3.Connection) -> None:
+    for table, columns in ADDED_COLUMNS.items():
+        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        for name, definition in columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
 
 def db_path() -> Path:
@@ -121,6 +160,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     """Crea el esquema y actualiza categorías y reglas del sistema. No toca reglas propias, ajustes ni
     qué reglas del sistema ha desactivado el usuario."""
     conn.executescript(f"BEGIN;{SCHEMA}COMMIT;")
+    _add_missing_columns(conn)
     conn.executemany(
         "INSERT INTO categories (id, name, kind, grp, is_system) VALUES (?,?,?,?,1) "
         "ON CONFLICT(id) DO UPDATE SET name=excluded.name, kind=excluded.kind, grp=excluded.grp",

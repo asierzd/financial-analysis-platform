@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from statistics import mean, median, pstdev
 
+from .ingest.base import MOV_ORDER_FEE, MOV_WITHHOLDING
+
 # nombre, intervalo mínimo y máximo (días), periodo nominal, veces al año, variación máxima de importe
 FREQUENCIES = [
     ("Semanal", 6, 8, 7, 52.18, 0.15),
@@ -58,6 +60,8 @@ def detect_recurring(txs: list[dict]) -> list[Recurring]:
         data_until[tx["account_id"]] = tx["date"]
         if tx["kind"] == "transfer" or tx["category_id"] == "efectivo" or tx["amount_cents"] == 0:
             continue
+        if tx["movement"] in (MOV_ORDER_FEE, MOV_WITHHOLDING):
+            continue  # van ligadas a otra operación: no son cargos que se puedan dar de baja
         direction = "in" if tx["amount_cents"] > 0 else "out"
         groups.setdefault((tx["account_id"], tx["merchant"], direction), []).append(tx)
 

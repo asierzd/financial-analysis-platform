@@ -22,6 +22,7 @@ def normalize(text: str | None) -> str:
 
 # Prefijos que describen la operación, no al comercio.
 _PREFIXES = [
+    "VENTA DE", "DIVIDENDO DE", "ANULACION DE COMPRA DE", "COMPRA DE",
     "PAGO MOVIL EN", "COMPRA INTERNET EN", "COMPRA INTERNET", "TRANSACCION CONTACTLESS EN", "TRANSACCION CONTACTLESS",
     "TRANSFERENCIA INMEDIATA A FAVOR DE", "TRANSFERENCIA INMEDIATA DE", "TRANSFERENCIA INMEDIATA A",
     "TRANSFERENCIA INMEDIATA", "DISPOSICION EN CAJERO", "DISPOSICION EFECTIVO",
@@ -111,17 +112,22 @@ class Classifier:
         ).fetchall()
         self.rules = [Rule(r["id"], f" {r['pattern']} ", r["category_id"], r["sign"], r["label"]) for r in rows]
 
-    def classify(self, concept: str, movement: str, notes: str, amount_cents: int) -> Classification:
+    def classify(self, concept: str, movement: str, notes: str, amount_cents: int,
+                 fixed: str | None = None, fallback: str | None = None) -> Classification:
+        merchant = clean_merchant(concept, movement, notes)
+        if fixed:
+            return Classification(fixed, "rule", None, merchant)
         haystack = f" {normalize(concept)} {normalize(movement)} {normalize(notes)} "
         direction = "in" if amount_cents >= 0 else "out"
-        merchant = clean_merchant(concept, movement, notes)
         for rule in self.rules:
             if rule.sign != "any" and rule.sign != direction:
                 continue
             if rule.needle in haystack:
                 return Classification(rule.category_id, "rule", rule.id, rule.label or merchant)
-        fallback = FALLBACK_INCOME if amount_cents >= 0 else FALLBACK_EXPENSE
-        return Classification(fallback, "default", None, merchant)
+        if fallback:
+            return Classification(fallback, "rule", None, merchant)
+        default = FALLBACK_INCOME if amount_cents >= 0 else FALLBACK_EXPENSE
+        return Classification(default, "default", None, merchant)
 
 
 def reclassify_all(conn: sqlite3.Connection) -> int:
@@ -129,10 +135,12 @@ def reclassify_all(conn: sqlite3.Connection) -> int:
     classifier = Classifier(conn)
     changed = 0
     rows = conn.execute(
-        "SELECT id, concept, movement, notes, amount_cents, category_id, category_source, merchant, rule_id FROM transactions"
+        "SELECT id, concept, movement, notes, amount_cents, category_id, category_source, merchant, rule_id, "
+        "fixed_category, fallback_category FROM transactions"
     ).fetchall()
     for tx in rows:
-        result = classifier.classify(tx["concept"], tx["movement"], tx["notes"], tx["amount_cents"])
+        result = classifier.classify(tx["concept"], tx["movement"], tx["notes"], tx["amount_cents"],
+                                     tx["fixed_category"], tx["fallback_category"])
         if tx["category_source"] == "user":
             if result.merchant != tx["merchant"]:
                 conn.execute("UPDATE transactions SET merchant = ? WHERE id = ?", (result.merchant, tx["id"]))

@@ -8,6 +8,7 @@ import os
 import re
 import sqlite3
 from contextlib import asynccontextmanager, closing
+from datetime import date
 from pathlib import Path
 from statistics import median
 from typing import Iterator, Literal
@@ -21,6 +22,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import alerts as alerts_engine
 from . import analytics
+from . import investments as investments_engine
 from . import transfers as transfers_engine
 from .categorize import normalize, reclassify_all
 from .db import connect, get_settings, init_db
@@ -86,6 +88,7 @@ def _account_ids(accounts: str | None) -> list[int] | None:
 
 def _after_data_change(conn: sqlite3.Connection) -> None:
     transfers_engine.apply_confirmed(conn)
+    ingest.recompute_computed_balances(conn)
     conn.commit()
     alerts_engine.refresh_alerts(conn)
 
@@ -95,11 +98,11 @@ def _after_data_change(conn: sqlite3.Connection) -> None:
 
 def _accounts_overview(conn: sqlite3.Connection) -> list[dict]:
     accounts = {r["id"]: {**dict(r), "count": 0, "first": None, "last": None, "balance": None}
-                for r in conn.execute("SELECT id, name, bank, iban FROM accounts ORDER BY id")}
+                for r in conn.execute("SELECT id, name, bank, iban, balance_computed FROM accounts ORDER BY id")}
     stats = conn.execute("SELECT account_id, COUNT(*) AS n, MIN(date) AS first, MAX(date) AS last FROM transactions GROUP BY account_id")
     for row in stats:
         accounts[row["account_id"]].update(count=row["n"], first=row["first"], last=row["last"])
-    for row in conn.execute("SELECT account_id, balance_cents FROM transactions WHERE balance_cents IS NOT NULL ORDER BY date, seq"):
+    for row in conn.execute("SELECT account_id, balance_cents FROM transactions WHERE balance_cents IS NOT NULL ORDER BY date, occurred_at, seq"):
         accounts[row["account_id"]]["balance"] = row["balance_cents"]
     return list(accounts.values())
 
@@ -132,7 +135,11 @@ def dashboard(
     accounts: str | None = None,
     conn: sqlite3.Connection = DB,
 ) -> dict:
-    return analytics.dashboard(conn, start, end, _account_ids(accounts))
+    ids = _account_ids(accounts)
+    data = analytics.dashboard(conn, start, end, ids)
+    if not data.get("empty"):
+        data["investments_value"] = investments_engine.portfolio_value(conn, ids)
+    return data
 
 
 @app.get("/api/analysis")
@@ -420,6 +427,39 @@ def undo_transfer(body: TransferPair, conn: sqlite3.Connection = DB) -> dict:
         conn.rollback()
         raise HTTPException(422, str(exc)) from exc
     _after_data_change(conn)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------- inversiones
+
+
+@app.get("/api/investments")
+def investments(accounts: str | None = None, conn: sqlite3.Connection = DB) -> dict:
+    return investments_engine.overview(conn, _account_ids(accounts))
+
+
+class PriceUpdate(BaseModel):
+    price_eur: float = Field(gt=0, le=100_000_000)
+    as_of: str | None = Field(None, pattern=DATE_RE)
+
+
+@app.put("/api/investments/prices/{isin}")
+def set_price(isin: str, body: PriceUpdate, conn: sqlite3.Connection = DB) -> dict:
+    if not conn.execute("SELECT 1 FROM investment_events WHERE isin=? LIMIT 1", (isin,)).fetchone():
+        raise HTTPException(404, "No hay operaciones de ese valor.")
+    conn.execute(
+        "INSERT INTO investment_prices (isin, price, as_of) VALUES (?,?,?) "
+        "ON CONFLICT(isin) DO UPDATE SET price=excluded.price, as_of=excluded.as_of",
+        (isin, str(body.price_eur), body.as_of or date.today().isoformat()),
+    )
+    conn.commit()
+    return {"ok": True}
+
+
+@app.delete("/api/investments/prices/{isin}")
+def delete_price(isin: str, conn: sqlite3.Connection = DB) -> dict:
+    conn.execute("DELETE FROM investment_prices WHERE isin=?", (isin,))
+    conn.commit()
     return {"ok": True}
 
 

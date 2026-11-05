@@ -8,7 +8,7 @@ const EXPENSE = "var(--series-2)";
 
 // Las categorías más habituales conservan siempre su color al cambiar de periodo.
 const EXPENSE_SLOTS = { vivienda: 1, supermercado: 2, recibos: 3, transporte: 4, restaurantes: 5, compras: 6, ocio: 7, seguros: 8 };
-const INCOME_SLOTS = { nomina: 1, bizum_in: 2, transfer_in: 3, intereses: 4, devoluciones: 5, otros_ingresos: 6 };
+const INCOME_SLOTS = { nomina: 1, bizum_in: 2, transfer_in: 3, intereses: 4, devoluciones: 5, otros_ingresos: 6, saveback: 7 };
 
 function pieCard(title, items, slots, navigate, emptyText) {
   const total = items.reduce((sum, i) => sum + i.amount, 0);
@@ -75,7 +75,7 @@ export async function dashboardView({ filters, navigate, meta }) {
   if (data.empty) {
     return h("div", null, h("section", { class: "card" }, emptyState(
       "Empieza importando tus movimientos",
-      "Descarga el Excel de movimientos de tu cuenta de BBVA o Santander y súbelo aquí. Los datos se quedan en tu ordenador.",
+      "Descarga los movimientos de BBVA, Santander o Trade Republic y súbelos aquí. Los datos se quedan en tu ordenador.",
       link("#/importar", h("button", { type: "button", class: "primary" }, "Importar movimientos")),
     )));
   }
@@ -92,6 +92,7 @@ export async function dashboardView({ filters, navigate, meta }) {
         h("div", { class: "tile-label" }, "Saldo actual"),
         h("div", { class: "hero-value" }, data.balance === null ? "—" : eur(data.balance)),
         h("div", { class: "tile-note" }, data.balance === null ? "El extracto no incluye saldo" : `A ${fmtDate(data.balance_date)}${data.balance_accounts > 1 ? ` · suma de ${data.balance_accounts} cuentas` : ""}`),
+        data.investments_value ? h("div", { class: "tile-note", style: { marginTop: 0 } }, link("#/inversiones", `+ ${eur0(data.investments_value)} invertidos (estimado)`)) : null,
       ),
       tile("Ingresos", eur0(totals.income), delta(totals.income, previous?.income, compare)),
       tile("Gastos", eur0(totals.expense), delta(totals.expense, previous?.expense, { ...compare, upIsGood: false })),

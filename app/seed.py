@@ -8,6 +8,7 @@ CATEGORIES = [
     ("transfer_in", "Transferencias recibidas", "income", "income"),
     ("intereses", "Intereses y dividendos", "income", "income"),
     ("devoluciones", "Devoluciones y reembolsos", "income", "income"),
+    ("saveback", "Saveback y recompensas", "income", "income"),
     ("otros_ingresos", "Otros ingresos", "income", "income"),
     ("vivienda", "Hipoteca y alquiler", "expense", "needs"),
     ("recibos", "Recibos y suministros", "expense", "needs"),
@@ -33,6 +34,7 @@ CATEGORIES = [
     ("transfer_out", "Transferencias y Bizum enviados", "expense", "wants"),
     ("ahorro", "Ahorro e inversión", "expense", "savings"),
     ("internos", "Traspasos entre mis cuentas", "transfer", "internal"),
+    ("inversiones", "Compra y venta de inversiones", "transfer", "internal"),
     ("sin_clasificar", "Sin clasificar", "expense", "unknown"),
 ]
 

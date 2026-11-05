@@ -100,6 +100,9 @@ def fingerprints(account_id: int, transactions: list[ParsedTx]) -> list[str]:
     seen: Counter[str] = Counter()
     result = []
     for tx in transactions:
+        if tx.external_id:
+            result.append(hashlib.sha256(f"{account_id}|id|{tx.external_id}".encode()).hexdigest())
+            continue
         base = "|".join(str(p) for p in (
             account_id, tx.date.isoformat(), tx.value_date.isoformat() if tx.value_date else "",
             tx.amount_cents, normalize(tx.concept), tx.balance_cents if tx.balance_cents is not None else "",
@@ -128,14 +131,15 @@ def count_existing(conn: sqlite3.Connection, prints: list[str]) -> int:
 def preview(conn: sqlite3.Connection, result: ParseResult, account_id: int | None) -> dict:
     ordered = chronological(result.transactions)
     existing = count_existing(conn, fingerprints(account_id, ordered)) if account_id else 0
+    date_from, date_to = _date_span(result)
     classifier = Classifier(conn)
     names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM categories")}
     sample, unclassified = [], 0
     for tx in ordered:
-        c = classifier.classify(tx.concept, tx.movement, tx.notes, tx.amount_cents)
+        c = _classify(classifier, tx)
         unclassified += c.source == "default"
     for tx in reversed(ordered[-PREVIEW_ROWS:]):
-        c = classifier.classify(tx.concept, tx.movement, tx.notes, tx.amount_cents)
+        c = _classify(classifier, tx)
         sample.append({
             "date": tx.date.isoformat(), "concept": tx.concept, "merchant": c.merchant,
             "amount_cents": tx.amount_cents, "balance_cents": tx.balance_cents,
@@ -147,13 +151,64 @@ def preview(conn: sqlite3.Connection, result: ParseResult, account_id: int | Non
         "total": len(ordered),
         "new": len(ordered) - existing,
         "existing": existing,
-        "date_from": ordered[0].date.isoformat(),
-        "date_to": ordered[-1].date.isoformat(),
+        "date_from": date_from,
+        "date_to": date_to,
         "account_hint": result.account_hint,
-        "warnings": result.warnings + _currency_warning(ordered),
+        "warnings": result.warnings + _currency_warning(ordered) + _history_warning(result),
+        "events": len(result.events),
+        "positions": len({e.isin for e in result.events}),
         "classified": len(ordered) - unclassified,
         "sample": sample,
     }
+
+
+def _classify(classifier: Classifier, tx: ParsedTx):
+    return classifier.classify(tx.concept, tx.movement, tx.notes, tx.amount_cents, tx.fixed_category, tx.fallback_category)
+
+
+def _date_span(result: ParseResult) -> tuple[str, str]:
+    days = [t.date for t in result.transactions] + [e.date for e in result.events]
+    return min(days).isoformat(), max(days).isoformat()
+
+
+# Un descuadre menor es redondeo; por encima de esto, el extracto no empieza en la apertura de la cuenta.
+NEGATIVE_CASH_TOLERANCE = 100
+
+
+def _lowest_closing_balance(amounts_by_day: dict[str, int]) -> int:
+    running, lowest = 0, 0
+    for day in sorted(amounts_by_day):
+        running += amounts_by_day[day]
+        lowest = min(lowest, running)
+    return lowest
+
+
+def _history_warning(result: ParseResult) -> list[str]:
+    if not result.computed_balance:
+        return []
+    by_day: dict[str, int] = {}
+    for tx in result.transactions:
+        by_day[tx.date.isoformat()] = by_day.get(tx.date.isoformat(), 0) + tx.amount_cents
+    if _lowest_closing_balance(by_day) < -NEGATIVE_CASH_TOLERANCE:
+        return ["Este fichero no parece empezar en la apertura de la cuenta: sin ese historial no puedo calcular "
+                "tu efectivo y las posiciones pueden salir incompletas. Exporta el periodo «desde la apertura»."]
+    return ["Este banco no da el saldo: lo calcularé sumando movimientos. Compara el resultado con el de tu app."]
+
+
+def recompute_computed_balances(conn: sqlite3.Connection) -> None:
+    """Saldo de las cuentas sin saldo en el extracto. Si la suma baja de cero, falta historial y no se inventa nada."""
+    for account in conn.execute("SELECT id FROM accounts WHERE balance_computed=1").fetchall():
+        rows = conn.execute(
+            "SELECT id, date, amount_cents FROM transactions WHERE account_id=? ORDER BY date, occurred_at, seq", (account["id"],),
+        ).fetchall()
+        by_day: dict[str, int] = {}
+        for row in rows:
+            by_day[row["date"]] = by_day.get(row["date"], 0) + row["amount_cents"]
+        complete = _lowest_closing_balance(by_day) >= -NEGATIVE_CASH_TOLERANCE
+        running = 0
+        for row in rows:
+            running += row["amount_cents"]
+            conn.execute("UPDATE transactions SET balance_cents=? WHERE id=?", (running if complete else None, row["id"]))
 
 
 def _currency_warning(transactions: list[ParsedTx]) -> list[str]:
@@ -166,26 +221,41 @@ def _currency_warning(transactions: list[ParsedTx]) -> list[str]:
 def store(conn: sqlite3.Connection, result: ParseResult, filename: str, account_id: int) -> dict:
     ordered = chronological(result.transactions)
     prints = fingerprints(account_id, ordered)
+    date_from, date_to = _date_span(result)
     cursor = conn.execute(
         "INSERT INTO imports (account_id, filename, parser, rows_total, rows_new, rows_skipped, date_from, date_to) "
         "VALUES (?,?,?,?,0,0,?,?)",
-        (account_id, filename[:200], result.parser_id, len(ordered), ordered[0].date.isoformat(), ordered[-1].date.isoformat()),
+        (account_id, filename[:200], result.parser_id, len(ordered), date_from, date_to),
     )
     import_id = cursor.lastrowid
     classifier = Classifier(conn)
     start_seq = conn.execute("SELECT COALESCE(MAX(seq), 0) FROM transactions").fetchone()[0]
     added = 0
     for offset, (tx, fingerprint) in enumerate(zip(ordered, prints), start=1):
-        c = classifier.classify(tx.concept, tx.movement, tx.notes, tx.amount_cents)
+        c = _classify(classifier, tx)
         cur = conn.execute(
             "INSERT OR IGNORE INTO transactions (account_id, import_id, date, value_date, amount_cents, currency, "
-            "balance_cents, concept, movement, notes, merchant, category_id, category_source, rule_id, seq, fingerprint) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "balance_cents, concept, movement, notes, merchant, category_id, category_source, rule_id, seq, fingerprint, "
+            "occurred_at, fixed_category, fallback_category) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (account_id, import_id, tx.date.isoformat(), tx.value_date.isoformat() if tx.value_date else None,
              tx.amount_cents, tx.currency, tx.balance_cents, tx.concept, tx.movement, tx.notes, c.merchant,
-             c.category_id, c.source, c.rule_id, start_seq + offset, fingerprint),
+             c.category_id, c.source, c.rule_id, start_seq + offset, fingerprint,
+             tx.occurred_at, tx.fixed_category, tx.fallback_category),
         )
         added += cur.rowcount
+    events_added = 0
+    for event in result.events:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO investment_events (fingerprint, account_id, import_id, date, occurred_at, kind, isin, name, "
+            "asset_class, shares, price, amount_cents, fee_cents, tax_cents, notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (f"{account_id}|{event.external_id}", account_id, import_id, event.date.isoformat(), event.occurred_at, event.kind,
+             event.isin, event.name, event.asset_class, None if event.shares is None else str(event.shares),
+             None if event.price is None else str(event.price), event.amount_cents, event.fee_cents, event.tax_cents, event.notes),
+        )
+        events_added += cur.rowcount
+    if result.computed_balance:
+        conn.execute("UPDATE accounts SET balance_computed=1 WHERE id=?", (account_id,))
     skipped = len(ordered) - added
     conn.execute("UPDATE imports SET rows_new=?, rows_skipped=? WHERE id=?", (added, skipped, import_id))
-    return {"import_id": import_id, "new": added, "skipped": skipped, "total": len(ordered), "warnings": result.warnings}
+    return {"import_id": import_id, "new": added, "skipped": skipped, "total": len(ordered), "events": events_added,
+            "warnings": result.warnings}

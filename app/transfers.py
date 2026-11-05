@@ -18,7 +18,7 @@ from .db import get_settings
 INTERNAL_CATEGORY = "internos"
 # Solo lo que podría ser un traspaso. Un recibo o una compra no se proponen aunque coincida el importe.
 OUT_CATEGORIES = {"transfer_out", "sin_clasificar", "ahorro"}
-IN_CATEGORIES = {"transfer_in", "bizum_in", "otros_ingresos"}
+IN_CATEGORIES = {"transfer_in", "bizum_in", "otros_ingresos", "ahorro"}
 
 
 def _pair_key(out_tx: dict, in_tx: dict) -> str:

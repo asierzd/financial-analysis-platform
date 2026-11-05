@@ -17,7 +17,7 @@ export async function importView({ meta, reload, refreshMeta, navigate }) {
 
   const dropZone = () => {
     const input = h("input", {
-      type: "file", accept: ".xlsx,.xls,.csv,.txt,.htm,.html",
+      type: "file", accept: ".xlsx,.xls,.csv,.txt,.htm,.html,.pdf",
       onchange: (event) => { if (event.target.files[0]) start(event.target.files[0]); },
     });
     const zone = h("label", {
@@ -99,6 +99,7 @@ export async function importView({ meta, reload, refreshMeta, navigate }) {
         miniStat("Ya importados", num(p.existing)),
         miniStat("Clasificados solos", `${num(p.classified)} de ${num(p.total)}`)),
       p.warnings.map((w) => h("div", { class: "notice", style: { marginBottom: "8px" } }, w)),
+      p.events ? h("div", { class: "notice info", style: { marginBottom: "8px" } }, `Incluye ${num(p.events)} operaciones sobre ${num(p.positions)} valores: las verás en Inversiones.`) : null,
       h("div", { class: "row", style: { marginBottom: "12px" } },
         h("label", { class: "field" }, "Guardar en", accountChoice),
         h("label", { class: "field" }, " ", newName)),
@@ -191,14 +192,20 @@ export async function importView({ meta, reload, refreshMeta, navigate }) {
   return h("div", { class: "stack" },
     pageHead("Importar movimientos", "Puedes repetir ficheros o solaparlos: los movimientos ya importados se ignoran"),
     stage,
-    h("div", { class: "grid cols-2" },
+    h("div", { class: "grid cols-3" },
       card("Cómo descargarlos de tu banco", "BBVA o Santander. La opción puede cambiar un poco de sitio según la versión de la web",
         h("ol", { class: "steps" },
           h("li", null, "Entra en la web de tu banco desde el ordenador y abre tu cuenta."),
           h("li", null, "Ve a los movimientos y elige el rango de fechas más amplio que te deje."),
           h("li", null, "Usa la opción de descargar o exportar y elige Excel."),
           h("li", null, "Sube aquí ese fichero, sin abrirlo ni modificarlo."))),
-      card("Otros bancos", "BBVA y Santander se detectan solos",
+      card("Trade Republic", "Solo desde la app del móvil",
+        h("ol", { class: "steps" },
+          h("li", null, "En tu perfil, abre «Extractos de cuenta»."),
+          h("li", null, "Pulsa «Exportación de transacciones»."),
+          h("li", null, "Elige el periodo desde la apertura de la cuenta: sin él no se puede calcular el efectivo ni el coste de lo que tienes."),
+          h("li", null, "Sube aquí el CSV, sin abrirlo ni guardarlo con Excel."))),
+      card("Otros bancos", "BBVA, Santander y Trade Republic se detectan solos",
         h("p", { class: "muted" }, "Si subes un Excel o CSV de otro banco, te preguntaré qué es cada columna y lo importaré igual. Se puede añadir un importador automático por banco sin tocar el resto de la aplicación."))),
     card("Historial de importaciones", "Deshacer borra solo los movimientos que añadió esa importación", history),
   );

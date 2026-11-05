@@ -28,13 +28,13 @@ No uses `podman restart` ni `podman-compose restart`: en Podman 3.4.4 sin root f
 
 ## Primeros pasos
 
-1. Descarga los movimientos de tu cuenta desde la web de BBVA o Santander, en Excel.
+1. Descarga los movimientos desde la web de BBVA o Santander, en Excel, o desde la app de Trade Republic, con «Exportación de transacciones» (CSV).
 2. Súbelos en **Importar**. Verás una vista previa antes de guardar nada.
 3. Corrige en **Movimientos** lo que quede sin clasificar y pulsa «Aplicar siempre» para crear una regla.
 
-¿Quieres probarla antes? Importa `samples/bbva_ejemplo.xlsx` o `samples/santander_ejemplo.xlsx`, con datos ficticios,
-y después pulsa «Deshacer» en el historial de importaciones. Se regeneran con `samples/generar_ejemplo.py` y
-`samples/generar_ejemplo_santander.py`.
+¿Quieres probarla antes? Importa `samples/bbva_ejemplo.xlsx`, `samples/santander_ejemplo.xlsx` o
+`samples/traderepublic_ejemplo.csv`, con datos ficticios, y después pulsa «Deshacer» en el historial de importaciones.
+Se regeneran con los scripts `samples/generar_ejemplo*.py`.
 
 ## Qué hace
 
@@ -43,6 +43,7 @@ y después pulsa «Deshacer» en el historial de importaciones. Se regeneran con
 | **Inicio** | Saldo, ingresos, gastos, tasa de ahorro, alertas, gráficos de pastel de gastos e ingresos, categorías, comercios y próximos cargos |
 | **Movimientos** | Búsqueda, filtros, cambio de categoría, reglas y exportación a CSV |
 | **Análisis** | Salud financiera, regla 50/30/20, evolución, mapa de calor, variabilidad y tendencia, concentración del gasto, cargos fijos, comisiones, proyección de saldo y simulador de recortes |
+| **Inversiones** | Posiciones con coste FIFO, valor estimado, plusvalías, rentabilidad anual (TIR), reparto por activo, aportaciones, cuenta remunerada y resumen por año |
 | **Alertas** | Traspasos entre tus cuentas por confirmar, comisiones, duplicados, importes inusuales, comercios nuevos, subidas de precio, cargos o ingresos ausentes, nuevos cargos periódicos, saldo negativo o bajo, presupuestos y saldos que no cuadran |
 | **Presupuestos** | Límite mensual por categoría, con sugerencia a partir de tu historial |
 | **Reglas y ajustes** | Reglas de clasificación, categorías propias, umbrales de alertas y cuentas |
@@ -66,6 +67,18 @@ Una transferencia entre tus cuentas de distintos bancos parece un gasto en una y
 extracto solo ve su lado. La aplicación empareja importes iguales de signo contrario en fechas cercanas y te los propone
 en **Alertas**. Nada se excluye hasta que confirmas, y cada decisión se puede deshacer. Los avisos de presupuesto siempre
 cuentan todas las cuentas. El margen de días se cambia en los umbrales de alertas.
+
+## Inversiones (Trade Republic)
+
+- Una compra o venta mueve dinero, pero no es un gasto ni un ingreso. Sí lo son los intereses, dividendos y saveback
+  (ingresos) y las comisiones y retenciones (gastos), que aparecen como movimientos propios.
+- **Exporta siempre desde la apertura de la cuenta.** El extracto no trae saldo: el efectivo se calcula sumando
+  movimientos. Si la suma baja de cero se considera que falta historial y no se muestra un saldo inventado.
+- **No hay precios en vivo**, porque la aplicación no se conecta a internet. Se valora con el precio de la última
+  operación o con el que escribas en la tabla de posiciones, indicando siempre de cuándo es.
+- El coste se calcula por FIFO. El resumen por año es **orientativo**: no aplica la regla de los dos meses y no sustituye
+  al informe fiscal de Trade Republic ni a un asesor.
+- Las operaciones corporativas (fusiones, liquidaciones...) no ajustan los títulos: se avisa para que lo compruebes.
 
 ## Tus datos
 

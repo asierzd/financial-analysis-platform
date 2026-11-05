@@ -20,8 +20,8 @@ def read_file(data: bytes, filename: str) -> RawFile:
     head = data[:1024].lstrip(b"\xef\xbb\xbf \t\r\n")
     if data[:4] == b"%PDF":
         raise FormatError(
-            "Es un PDF, y un PDF no conserva las columnas de forma fiable. "
-            "En la web de BBVA, abre los movimientos de tu cuenta y descárgalos en formato Excel."
+            "Es un PDF, y un PDF no conserva las columnas de forma fiable. En BBVA o Santander, descarga los movimientos "
+            "en Excel desde la web. En Trade Republic, usa en la app «Exportación de transacciones», que genera un CSV."
         )
     if data[:2] == b"PK":
         return RawFile(filename, _read_xlsx(data))

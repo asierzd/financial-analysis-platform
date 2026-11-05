@@ -3,6 +3,7 @@ import { hideTooltip } from "./charts.js";
 import { dashboardView } from "./views/dashboard.js";
 import { transactionsView } from "./views/transactions.js";
 import { analysisView } from "./views/analysis.js";
+import { investmentsView } from "./views/investments.js";
 import { alertsView } from "./views/alerts.js";
 import { budgetsView } from "./views/budgets.js";
 import { importView } from "./views/import.js";
@@ -12,6 +13,7 @@ const ROUTES = [
   { id: "inicio", label: "Inicio", view: dashboardView, filters: true, accounts: true, icon: "M4 11.5 12 4l8 7.5V20h-5.5v-5.5h-5V20H4Z" },
   { id: "movimientos", label: "Movimientos", view: transactionsView, filters: true, accounts: true, icon: "M7 4v16M7 20l-3-3M7 20l3-3M17 20V4M17 4l-3 3M17 4l3 3" },
   { id: "analisis", label: "Análisis", view: analysisView, filters: true, accounts: true, icon: "M4 20V10M10 20V4M16 20v-7M21 20H3" },
+  { id: "inversiones", label: "Inversiones", view: investmentsView, accounts: true, icon: "M4 19 9.5 13l4 3.5L20 8M20 8h-5M20 8v5" },
   { id: "alertas", label: "Alertas", view: alertsView, accounts: true, icon: "M6 16.5V11a6 6 0 1 1 12 0v5.5l1.5 2h-15ZM10 21h4" },
   { id: "presupuestos", label: "Presupuestos", view: budgetsView, accounts: true, icon: "M4 7h16v13H4ZM4 7l2-3h12l2 3M15 13.5h2" },
   { id: "importar", label: "Importar", view: importView, icon: "M12 15V4M8 8l4-4 4 4M4 15v5h16v-5" },

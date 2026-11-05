@@ -30,7 +30,7 @@ def load_txs(conn: sqlite3.Connection, account_ids: list[int] | None = None) -> 
     if account_ids:
         sql += f" WHERE t.account_id IN ({','.join('?' * len(account_ids))})"
         params.extend(account_ids)
-    return [dict(r) for r in conn.execute(sql + " ORDER BY t.date, t.seq", params)]
+    return [dict(r) for r in conn.execute(sql + " ORDER BY t.date, t.occurred_at, t.seq", params)]
 
 
 def in_range(txs: list[dict], start: str | None, end: str | None) -> list[dict]:

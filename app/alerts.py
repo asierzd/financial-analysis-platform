@@ -14,6 +14,7 @@ from statistics import mean, median, pstdev
 
 from .analytics import load_txs
 from .db import get_settings
+from .ingest.base import MOV_ORDER_FEE, MOV_WITHHOLDING
 from .recurring import Recurring, detect_recurring
 
 MIN_MERCHANT_HISTORY = 8
@@ -67,7 +68,7 @@ def _detect_fees(txs: list[dict]) -> list[Candidate]:
             f"{t['concept']}. Reclámala al banco si no te corresponde o si tu cuenta debería estar exenta.",
             t["date"], t["amount_cents"], [t["id"]], t["account_id"],
         )
-        for t in txs if t["category_id"] == "comisiones" and t["amount_cents"] < 0
+        for t in txs if t["category_id"] == "comisiones" and t["amount_cents"] < 0 and t["movement"] != MOV_ORDER_FEE
     ]
 
 
@@ -77,7 +78,7 @@ def _detect_duplicates(txs: list[dict], settings: dict) -> list[Candidate]:
     groups: dict[tuple, list[dict]] = defaultdict(list)
     refunds: dict[tuple, list[date]] = defaultdict(list)
     for t in txs:
-        if t["kind"] == "transfer":
+        if t["kind"] == "transfer" or t["movement"] in (MOV_ORDER_FEE, MOV_WITHHOLDING):
             continue
         key = (t["account_id"], t["merchant"], abs(t["amount_cents"]))
         if t["amount_cents"] < 0:
@@ -244,11 +245,12 @@ def _detect_recurring_changes(items: list[Recurring], settings: dict) -> list[Ca
     return found
 
 
-def _detect_balances(txs: list[dict], settings: dict) -> list[Candidate]:
+def _detect_balances(txs: list[dict], settings: dict, computed: set[int]) -> list[Candidate]:
+    """Las cuentas con saldo calculado no entran: invertir el efectivo no es un saldo bajo y su cadena siempre cuadra."""
     found = []
     per_account: dict[int, list[dict]] = defaultdict(list)
     for t in txs:
-        if t["balance_cents"] is not None:
+        if t["balance_cents"] is not None and t["account_id"] not in computed:
             per_account[t["account_id"]].append(t)
     for account_id, rows in per_account.items():
         # Saldo negativo: una alerta por episodio, al entrar en descubierto.
@@ -355,7 +357,7 @@ def compute(conn: sqlite3.Connection) -> list[Candidate]:
         *_detect_outliers(txs, settings),
         *_detect_new_merchants(txs, settings),
         *_detect_recurring_changes(detect_recurring(txs), settings),
-        *_detect_balances(txs, settings),
+        *_detect_balances(txs, settings, {r["id"] for r in conn.execute("SELECT id FROM accounts WHERE balance_computed=1")}),
         *_detect_foreign(txs),
         *_detect_budgets(conn, txs, settings),
     ]
