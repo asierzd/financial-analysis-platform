@@ -1,4 +1,4 @@
-import { accountLabel, api, eur, fmtDate, h, qs, s, segmented, toast } from "./ui.js";
+import { accountLabel, api, eur, fmtDate, h, labelTables, qs, s, segmented, toast } from "./ui.js";
 import { hideTooltip } from "./charts.js";
 import { dashboardView } from "./views/dashboard.js";
 import { transactionsView } from "./views/transactions.js";
@@ -13,11 +13,11 @@ const ROUTES = [
   { id: "inicio", label: "Inicio", view: dashboardView, filters: true, accounts: true, icon: "M4 11.5 12 4l8 7.5V20h-5.5v-5.5h-5V20H4Z" },
   { id: "movimientos", label: "Movimientos", view: transactionsView, filters: true, accounts: true, icon: "M7 4v16M7 20l-3-3M7 20l3-3M17 20V4M17 4l-3 3M17 4l3 3" },
   { id: "analisis", label: "Análisis", view: analysisView, filters: true, accounts: true, icon: "M4 20V10M10 20V4M16 20v-7M21 20H3" },
-  { id: "inversiones", label: "Inversiones", view: investmentsView, accounts: true, icon: "M4 19 9.5 13l4 3.5L20 8M20 8h-5M20 8v5" },
+  { id: "inversiones", label: "Inversiones", view: investmentsView, accounts: true, more: true, icon: "M4 19 9.5 13l4 3.5L20 8M20 8h-5M20 8v5" },
   { id: "alertas", label: "Alertas", view: alertsView, accounts: true, icon: "M6 16.5V11a6 6 0 1 1 12 0v5.5l1.5 2h-15ZM10 21h4" },
-  { id: "presupuestos", label: "Presupuestos", view: budgetsView, accounts: true, icon: "M4 7h16v13H4ZM4 7l2-3h12l2 3M15 13.5h2" },
-  { id: "importar", label: "Importar", view: importView, icon: "M12 15V4M8 8l4-4 4 4M4 15v5h16v-5" },
-  { id: "ajustes", label: "Reglas y ajustes", view: settingsView, icon: "M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4" },
+  { id: "presupuestos", label: "Presupuestos", view: budgetsView, accounts: true, more: true, icon: "M4 7h16v13H4ZM4 7l2-3h12l2 3M15 13.5h2" },
+  { id: "importar", label: "Importar", view: importView, more: true, icon: "M12 15V4M8 8l4-4 4 4M4 15v5h16v-5" },
+  { id: "ajustes", label: "Reglas y ajustes", view: settingsView, more: true, icon: "M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4" },
 ];
 
 const PERIODS = [["month", "Este mes"], ["prev", "Mes pasado"], ["3m", "3 meses"], ["12m", "12 meses"], ["ytd", "Este año"], ["all", "Todo"]];
@@ -150,15 +150,48 @@ function renderFilters(route) {
 
 const pendingCount = () => (state.meta?.alerts_new ?? 0) + (state.meta?.transfers?.count ?? 0);
 
+const navIcon = (d) => s("svg", { viewBox: "0 0 24 24", "aria-hidden": "true" }, s("path", { d }));
+
+function navLink(route, active) {
+  const classes = [route.id === active ? "active" : "", route.more ? "secondary" : ""].filter(Boolean).join(" ");
+  return h("a", { href: `#/${route.id}`, class: classes || null, "aria-current": route.id === active ? "page" : null },
+    navIcon(route.icon),
+    route.label,
+    route.id === "alertas" && pendingCount()
+      ? h("span", { class: "badge", "aria-label": `${pendingCount()} alertas pendientes` }, pendingCount() > 99 ? "99+" : pendingCount())
+      : null);
+}
+
+function setMoreOpen(open) {
+  const panel = document.getElementById("more");
+  const button = document.querySelector(".more-btn");
+  if (panel.hidden === !open) return;
+  panel.hidden = !open;
+  button?.setAttribute("aria-expanded", String(open));
+  if (open) panel.querySelector("a")?.focus();
+  else if (panel.contains(document.activeElement)) button?.focus();
+}
+
+// En el móvil caben cinco destinos en la barra inferior: el resto se abre desde «Más».
 function renderNav(active) {
-  const nav = document.getElementById("nav");
-  nav.replaceChildren(...ROUTES.map((route) =>
-    h("a", { href: `#/${route.id}`, class: route.id === active ? "active" : "", "aria-current": route.id === active ? "page" : null },
-      s("svg", { viewBox: "0 0 24 24", "aria-hidden": "true" }, s("path", { d: route.icon })),
-      route.label,
-      route.id === "alertas" && pendingCount()
-        ? h("span", { class: "badge", "aria-label": `${pendingCount()} alertas pendientes` }, pendingCount() > 99 ? "99+" : pendingCount())
-        : null)));
+  const inMore = ROUTES.find((route) => route.id === active)?.more;
+  document.getElementById("nav").replaceChildren(
+    ...ROUTES.map((route) => navLink(route, active)),
+    h("button", {
+      type: "button", class: `more-btn${inMore ? " active" : ""}`, "aria-haspopup": "true",
+      "aria-expanded": String(!document.getElementById("more").hidden),
+      onclick: () => setMoreOpen(document.getElementById("more").hidden),
+    }, navIcon("M5 12h.01M12 12h.01M19 12h.01"), "Más"),
+  );
+  document.getElementById("more-nav").replaceChildren(...ROUTES.filter((route) => route.more).map((route) => navLink(route, active)));
+}
+
+function setupMorePanel() {
+  const panel = document.getElementById("more");
+  panel.addEventListener("click", (event) => {
+    if (event.target === panel || event.target.closest("a")) setMoreOpen(false);
+  });
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape") setMoreOpen(false); });
 }
 
 function parseHash() {
@@ -208,25 +241,28 @@ async function render({ refresh = false } = {}) {
 }
 
 function setupTheme() {
-  const button = document.getElementById("theme");
+  const buttons = document.querySelectorAll("[data-theme-btn]");
   const labels = { system: "Tema: del sistema", light: "Tema: claro", dark: "Tema: oscuro" };
   let theme = storageGet("theme", "system");
   const apply = () => {
     if (theme === "system") delete document.documentElement.dataset.theme;
     else document.documentElement.dataset.theme = theme;
-    button.textContent = labels[theme];
+    buttons.forEach((button) => { button.textContent = labels[theme]; });
   };
-  button.addEventListener("click", () => {
+  buttons.forEach((button) => button.addEventListener("click", () => {
     theme = { system: "light", light: "dark", dark: "system" }[theme];
     storageSet("theme", theme);
     apply();
     render();
-  });
+  }));
   apply();
 }
 
 setupTheme();
+setupMorePanel();
+new MutationObserver(() => labelTables(document.getElementById("view"))).observe(document.getElementById("view"), { childList: true, subtree: true });
 window.addEventListener("hashchange", () => {
+  setMoreOpen(false);
   render();
   scrollTo(0, 0);
 });

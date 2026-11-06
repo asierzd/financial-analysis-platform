@@ -195,6 +195,11 @@ export function segmented(options, selected, onChange, ariaLabel) {
   const root = h("div", { class: "segmented", role: "group", "aria-label": ariaLabel });
   const paint = (value) => {
     for (const button of root.children) button.setAttribute("aria-pressed", String(button.dataset.value === value));
+    // En el móvil la fila se desplaza de lado: la opción elegida no puede quedar fuera de la vista.
+    requestAnimationFrame(() => {
+      const button = [...root.children].find((b) => b.dataset.value === value);
+      if (button && root.scrollWidth > root.clientWidth) root.scrollLeft = button.offsetLeft - (root.clientWidth - button.offsetWidth) / 2;
+    });
   };
   for (const [value, label] of options) {
     root.append(h("button", {
@@ -205,6 +210,20 @@ export function segmented(options, selected, onChange, ariaLabel) {
   }
   paint(selected);
   return root;
+}
+
+/** Prepara las tablas de cuatro o más columnas para mostrarse como fichas en el móvil: cada celda lleva el nombre de su columna. */
+export function labelTables(root) {
+  for (const table of root.querySelectorAll("table:not([data-labeled])")) {
+    table.dataset.labeled = "";
+    const headers = [...table.querySelectorAll("thead th")];
+    if (headers.length < 4 || table.matches(".heat, .tx-table")) continue;
+    const names = headers.map((th) => th.textContent.replace(/[↑↓]/g, "").trim());
+    table.classList.add("stacks");
+    for (const row of table.querySelectorAll("tbody tr")) {
+      [...row.children].forEach((cell, index) => { if (names[index]) cell.dataset.label = names[index]; });
+    }
+  }
 }
 
 export const emptyState = (title, text, ...actions) =>

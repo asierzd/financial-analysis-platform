@@ -3,6 +3,10 @@
 import { eur, eur0, h, s, fmtMonth } from "./ui.js";
 
 const tooltipEl = () => document.getElementById("tooltip");
+const CHART_MARKS = ".pie-slice, .band-hit, .overlay";
+let tooltipCleanup = null;
+let tooltipHint = null;
+let armedMark = null; // en pantallas táctiles, la marca que ya enseña su valor y navega si se toca otra vez
 
 function showTooltip(x, y, title, rows) {
   const el = tooltipEl();
@@ -11,6 +15,7 @@ function showTooltip(x, y, title, rows) {
     ...rows.map((r) => h("div", { class: "t-row" },
       r.color ? h("i", { class: "t-key", style: { background: r.color } }) : null,
       h("b", null, r.value), r.label ? h("span", null, r.label) : null)),
+    tooltipHint ? h("div", { class: "t-hint" }, tooltipHint) : "",
   );
   el.hidden = false;
   const box = el.getBoundingClientRect();
@@ -20,7 +25,41 @@ function showTooltip(x, y, title, rows) {
   el.style.top = `${top}px`;
 }
 
-export const hideTooltip = () => { tooltipEl().hidden = true; };
+export const hideTooltip = () => {
+  tooltipEl().hidden = true;
+  armedMark = null;
+  const cleanup = tooltipCleanup;
+  tooltipCleanup = null;
+  cleanup?.();
+};
+
+// El dedo no tiene «salir de encima»: el valor se quita al tocar fuera, al desplazar o al girar la pantalla.
+document.addEventListener("pointerdown", (event) => {
+  if (!event.target.closest?.(CHART_MARKS)) hideTooltip();
+});
+window.addEventListener("scroll", hideTooltip, { passive: true });
+window.addEventListener("resize", hideTooltip);
+
+/** Ratón: pasar por encima enseña el valor y pulsar navega. Dedo: el primer toque enseña el valor y el segundo navega. */
+function bindMark(mark, tip, onActivate) {
+  mark.addEventListener("pointermove", (event) => {
+    if (event.pointerType !== "touch") tip(event.clientX, event.clientY);
+  });
+  mark.addEventListener("pointerleave", (event) => {
+    if (event.pointerType !== "touch") hideTooltip();
+  });
+  mark.addEventListener("click", (event) => {
+    if (event.pointerType === "touch" && (!onActivate || armedMark !== mark)) {
+      tooltipHint = onActivate ? "Toca otra vez para ver el detalle" : null;
+      tip(event.clientX, event.clientY);
+      tooltipHint = null;
+      armedMark = mark;
+      return;
+    }
+    hideTooltip();
+    onActivate?.();
+  });
+}
 
 function compact(cents) {
   const v = cents / 100;
@@ -162,13 +201,13 @@ export function drawLines(el, width, { xs, xLabel, tickLabel, series, band = nul
       .map((line) => ({ color: line.color, value: format(line.values[i]), label: series.length > 1 ? line.label : "" }));
     if (band && band.low[i] !== null) rows.push({ value: `${format(band.low[i])} a ${format(band.high[i])}`, label: band.label });
     showTooltip(clientX, clientY, xLabel(xs[i], i), rows);
+    tooltipCleanup = () => {
+      hair.setAttribute("visibility", "hidden");
+      dots.forEach((d) => d.setAttribute("visibility", "hidden"));
+    };
   };
-  const hide = () => {
-    hair.setAttribute("visibility", "hidden");
-    dots.forEach((d) => d.setAttribute("visibility", "hidden"));
-    hideTooltip();
-  };
-  overlay.addEventListener("pointermove", (event) => {
+  const hide = hideTooltip;
+  const showAtPointer = (event) => {
     const rect = svg.getBoundingClientRect();
     const px = ((event.clientX - rect.left) / rect.width) * width;
     let best = 0;
@@ -178,8 +217,13 @@ export function drawLines(el, width, { xs, xLabel, tickLabel, series, band = nul
       if (distance < bestDistance) { best = i; bestDistance = distance; }
     });
     show(best, event.clientX, event.clientY);
+  };
+  overlay.addEventListener("pointermove", showAtPointer);
+  overlay.addEventListener("pointerdown", showAtPointer);
+  overlay.addEventListener("pointercancel", hide);
+  overlay.addEventListener("pointerleave", (event) => {
+    if (event.pointerType !== "touch") hide();
   });
-  overlay.addEventListener("pointerleave", hide);
   overlay.addEventListener("blur", hide);
   const focusAt = (i) => {
     const rect = svg.getBoundingClientRect();
@@ -249,8 +293,7 @@ export function drawColumns(el, width, { labels, tickLabel = fmtMonth, titleLabe
       if (stacked) rows.unshift({ value: format(totals[i]), label: "Total" });
       showTooltip(x, top, titleLabel(label), rows);
     };
-    group.addEventListener("pointermove", (event) => tip(event.clientX, event.clientY));
-    group.addEventListener("pointerleave", hideTooltip);
+    bindMark(group, tip, onClick ? () => onClick(label) : null);
     group.addEventListener("focus", () => {
       const box = group.getBoundingClientRect();
       tip(box.left + box.width / 2, box.top + 30);
@@ -258,7 +301,6 @@ export function drawColumns(el, width, { labels, tickLabel = fmtMonth, titleLabe
     group.addEventListener("blur", hideTooltip);
     if (onClick) {
       group.style.cursor = "pointer";
-      group.addEventListener("click", () => onClick(label));
       group.addEventListener("keydown", (event) => { if (event.key === "Enter") onClick(label); });
     }
     svg.append(group);
@@ -348,8 +390,7 @@ export function drawPie(el, width, { slices, format = eur, onClick = null }) {
       if (slice.includes) rows.push({ value: "", label: slice.includes.join(", ") });
       showTooltip(x, y, slice.name, rows);
     };
-    mark.addEventListener("pointermove", (event) => tip(event.clientX, event.clientY));
-    mark.addEventListener("pointerleave", hideTooltip);
+    bindMark(mark, tip, clickable(slice) ? () => onClick(slice) : null);
     mark.addEventListener("focus", () => {
       const box = mark.getBoundingClientRect();
       tip(box.left + box.width / 2, box.top + box.height / 2);
@@ -357,7 +398,6 @@ export function drawPie(el, width, { slices, format = eur, onClick = null }) {
     mark.addEventListener("blur", hideTooltip);
     if (clickable(slice)) {
       mark.style.cursor = "pointer";
-      mark.addEventListener("click", () => onClick(slice));
       mark.addEventListener("keydown", (event) => { if (event.key === "Enter") onClick(slice); });
     }
     svg.append(mark);
